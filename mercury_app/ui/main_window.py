@@ -17,6 +17,7 @@ from mercury_app.ui.plots import (
     make_plot,
     plot_distribution_multi,
     plot_pressure_volume_multi,
+    smooth_log_distribution_curve,
 )
 
 
@@ -56,6 +57,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pressure_region_is_log = False
         self.distribution_region = None
         self.distribution_selected_curve = None
+        self.distribution_selected_points = None
         self._metrics_pending = False
 
         self.setWindowTitle(f"Mercury Intrusion MVP ({QT_LIB})")
@@ -963,6 +965,11 @@ class MainWindow(QtWidgets.QMainWindow):
             [],
             [],
             pen=pg.mkPen("#dc2626", width=3),
+        )
+        self.distribution_selected_points = self.distribution_plot.plot(
+            [],
+            [],
+            pen=None,
             symbol="o",
             symbolSize=7,
             symbolPen=pg.mkPen("#dc2626", width=1),
@@ -982,6 +989,12 @@ class MainWindow(QtWidgets.QMainWindow):
             except RuntimeError:
                 pass
             self.distribution_selected_curve = None
+        if self.distribution_selected_points is not None:
+            try:
+                self.distribution_plot.removeItem(self.distribution_selected_points)
+            except RuntimeError:
+                pass
+            self.distribution_selected_points = None
 
     def queue_metrics_update(self) -> None:
         if self._metrics_pending:
@@ -1068,7 +1081,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.result is None or self.distribution_selected_curve is None:
             return
         if self.active_index >= len(self.visible_results) or not self.visible_results[self.active_index]:
-            self.distribution_selected_curve.setData([], [])
+            self._clear_distribution_selection_data()
             if self.distribution_region is not None:
                 self.distribution_region.setVisible(False)
             return
@@ -1084,7 +1097,7 @@ class MainWindow(QtWidgets.QMainWindow):
             & (self.result.pressure <= hi)
         )
         if not np.any(mask):
-            self.distribution_selected_curve.setData([], [])
+            self._clear_distribution_selection_data()
             if self.distribution_region is not None:
                 self.distribution_region.setVisible(False)
             return
@@ -1098,7 +1111,16 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.distribution_region is not None:
             self.distribution_region.setRegion(self._distribution_region_values(x_values))
             self.distribution_region.setVisible(True)
-        self.distribution_selected_curve.setData(x_values, y_values)
+        curve_x, curve_y = smooth_log_distribution_curve(x_values, y_values)
+        self.distribution_selected_curve.setData(curve_x, curve_y)
+        if self.distribution_selected_points is not None:
+            self.distribution_selected_points.setData(x_values, y_values)
+
+    def _clear_distribution_selection_data(self) -> None:
+        if self.distribution_selected_curve is not None:
+            self.distribution_selected_curve.setData([], [])
+        if self.distribution_selected_points is not None:
+            self.distribution_selected_points.setData([], [])
 
     def _distribution_region_values(self, diameters: np.ndarray) -> list[float]:
         x_min = float(np.nanmin(diameters))
