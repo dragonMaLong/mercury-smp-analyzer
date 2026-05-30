@@ -1,0 +1,10 @@
+﻿{
+    "SourceRoot":  "D:\\software\\analysis\\Data\\压汞",
+    "OutputRoot":  "D:\\software\\analysis\\Data\\压汞\\Collected_PDF_SMP_XLS",
+    "ArchivesProcessed":  28,
+    "ArchivesFailed":  0,
+    "ScannedTargetFiles":  234,
+    "UniqueFilesWritten":  199,
+    "IdenticalDuplicatesSkipped":  35,
+    "NameConflictsDifferentContent":  4
+}
