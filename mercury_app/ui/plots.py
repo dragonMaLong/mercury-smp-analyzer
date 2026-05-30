@@ -6,6 +6,7 @@ os.environ.setdefault("PYQTGRAPH_QT_LIB", "PyQt5")
 
 import numpy as np
 import pyqtgraph as pg
+from scipy.interpolate import Akima1DInterpolator
 from pyqtgraph.Qt import QtCore
 
 
@@ -34,6 +35,8 @@ DEFAULT_COLORS = (
     "#991b1b",
     "#334155",
 )
+
+DISTRIBUTION_CURVE_POINT_COUNT = 360
 
 
 class PlainNumberAxis(pg.AxisItem):
@@ -139,15 +142,23 @@ def plot_distribution_multi(
         x_values = result.diameter[mask]
         y_values = np.maximum(result.log_diff_intrusion[mask], 0.0)
         order = np.argsort(x_values)
+        ordered_x = x_values[order]
+        ordered_y = y_values[order]
+        curve_x, curve_y = smooth_log_distribution_curve(ordered_x, ordered_y)
         plot.plot(
-            x_values[order],
-            y_values[order],
+            curve_x,
+            curve_y,
             pen=pg.mkPen(color, width=2),
+            name=_legend_name(result),
+        )
+        plot.plot(
+            ordered_x,
+            ordered_y,
+            pen=None,
             symbol="o",
             symbolSize=5,
             symbolPen=pg.mkPen(color, width=1),
             symbolBrush=pg.mkBrush("#ffffff"),
-            name=_legend_name(result),
         )
         if x_values.size:
             all_x.append(x_values)
@@ -196,6 +207,40 @@ def QtDashLine():
 
 def _legend_name(result) -> str:
     return str(result.metadata.get("file_name") or result.sample_name or "Sample")
+
+
+def smooth_log_distribution_curve(x_values: np.ndarray, y_values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    mask = np.isfinite(x_values) & (x_values > 0) & np.isfinite(y_values)
+    x_values = np.asarray(x_values[mask], dtype=float)
+    y_values = np.asarray(y_values[mask], dtype=float)
+    if x_values.size < 3:
+        return x_values, y_values
+
+    log_x = np.log10(x_values)
+    order = np.argsort(log_x)
+    log_x = log_x[order]
+    y_values = y_values[order]
+
+    unique_log_x, inverse = np.unique(log_x, return_inverse=True)
+    if unique_log_x.size < 3 or unique_log_x[0] == unique_log_x[-1]:
+        return 10.0**unique_log_x, y_values[: unique_log_x.size]
+
+    unique_y = np.zeros_like(unique_log_x)
+    counts = np.zeros_like(unique_log_x)
+    np.add.at(unique_y, inverse, y_values)
+    np.add.at(counts, inverse, 1.0)
+    unique_y = unique_y / np.maximum(counts, 1.0)
+
+    grid_size = max(DISTRIBUTION_CURVE_POINT_COUNT, unique_log_x.size * 8)
+    grid_x = np.linspace(unique_log_x[0], unique_log_x[-1], grid_size)
+    try:
+        interpolator = Akima1DInterpolator(unique_log_x, unique_y, method="akima")
+        grid_y = np.asarray(interpolator(grid_x), dtype=float)
+    except (TypeError, ValueError):
+        grid_y = np.interp(grid_x, unique_log_x, unique_y)
+
+    grid_y = np.nan_to_num(grid_y, nan=0.0, posinf=0.0, neginf=0.0)
+    return 10.0**grid_x, np.maximum(grid_y, 0.0)
 
 
 def _plain_number(value: float) -> str:

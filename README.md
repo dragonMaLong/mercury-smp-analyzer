@@ -10,7 +10,7 @@ The goal of this project is to provide a lightweight single-file analysis workfl
 - Add more SMP files without replacing the current list.
 - Show sample metadata, test time, instrument, software version, operator, submitter, penetrometer constant, mass, total pore volume, and max pressure.
 - Plot:
-  - Pore size distribution, displayed as the main chart.
+  - Pore size distribution, displayed as the main chart with log-diameter Akima curve interpolation.
   - Pressure vs cumulative pore volume.
 - Toggle each sample on or off with the blue dot.
 - Sort loaded files by test time.
@@ -95,6 +95,8 @@ The SMP file may contain these method parameters. When valid values are present,
 - Surface tension: `485 dynes/cm`
 
 The UI lets you temporarily override contact angle and surface tension per sample. These edits are kept in memory and do not modify the original SMP file.
+
+For display, the pore size distribution uses the smoothed `dV/dlogD` values and draws a dense Akima-interpolated curve over `log10(pore diameter)`. The circle markers remain visible as the calculated data points.
 
 ## Tests
 
