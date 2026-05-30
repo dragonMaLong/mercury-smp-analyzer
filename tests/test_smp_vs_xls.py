@@ -11,7 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_ROOT = PROJECT_ROOT if (PROJECT_ROOT / "M5G2.SMP").exists() else PROJECT_ROOT.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from mercury_app.core import calculate_microactive, export_results_xlsx, load_smp, metrics_for_pressure_range
+from mercury_app.core import calculate_microactive, export_results_xlsx, load_smp, metrics_for_pressure_range, summary_metrics
 from mercury_app.core.smp_parser import parse_smp
 
 
@@ -70,6 +70,23 @@ def test_pressure_range_metrics_update_from_core_only() -> None:
     assert metrics.diameter_min <= metrics.diameter_max
 
 
+def test_m5g2_summary_metrics_align_with_microactive_report() -> None:
+    result = load_smp(DATA_ROOT / "M5G2.SMP")
+    summary = summary_metrics(result)
+
+    assert summary.total_intrusion_pressure == pytest.approx(32992.58, rel=1e-5)
+    assert summary.total_intrusion_volume == pytest.approx(2.5159, abs=5e-5)
+    assert summary.total_pore_area == pytest.approx(26.429, rel=1e-5)
+    assert summary.median_volume_pressure == pytest.approx(1.76, rel=5e-3)
+    assert summary.median_volume_diameter == pytest.approx(102649.66, rel=2e-3)
+    assert summary.median_area_pressure == pytest.approx(15284.30, rel=5e-4)
+    assert summary.median_area_diameter == pytest.approx(11.83, rel=1e-3)
+    assert summary.average_pore_diameter == pytest.approx(380.77, rel=1e-5)
+    assert summary.bulk_density == pytest.approx(0.2948, rel=2e-3)
+    assert summary.apparent_density == pytest.approx(1.1410, rel=5e-3)
+    assert summary.porosity == pytest.approx(74.1642, rel=2e-3)
+
+
 def test_contact_angle_override_recalculates_diameter_only() -> None:
     smp = parse_smp(DATA_ROOT / "M5G2.SMP")
     baseline = calculate_microactive(smp)
@@ -99,7 +116,8 @@ def test_export_selected_results_to_one_xlsx(tmp_path: Path) -> None:
     assert summary["A5"].value == "File"
     assert summary["A6"].value == "M5G2"
     sample_sheet = workbook["M5G2"]
-    headers = [sample_sheet.cell(14, column).value for column in range(1, 10)]
+    table_row = next(row for row in range(1, 60) if sample_sheet.cell(row, 1).value == "Point")
+    headers = [sample_sheet.cell(table_row, column).value for column in range(1, 10)]
     assert "dV/dlogD (smoothed, intrusion only)" in headers
     assert all("raw" not in str(header).lower() for header in headers)
     workbook.close()

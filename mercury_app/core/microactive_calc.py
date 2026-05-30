@@ -110,6 +110,8 @@ def _metadata_from_smp(
         "sample_mass_g": smp.sample_mass_g,
         "assembly_mass_g": smp.assembly_mass_g,
         "mercury_mass_g": smp.mercury_mass_g,
+        "mercury_temperature_C": smp.mercury_temperature_C,
+        "mercury_density_gmL": smp.mercury_density_gmL,
         "adv_contact_angle_deg": theta,
         "rec_contact_angle_deg": smp.rec_contact_angle_deg,
         "surface_tension_dynes_cm": gamma,

@@ -96,6 +96,8 @@ class SMPFile:
     adv_contact_angle_deg:      float = 130.0
     rec_contact_angle_deg:      float = 130.0
     surface_tension_dynes_cm:   float = 485.0
+    mercury_temperature_C:      float = 0.0
+    mercury_density_gmL:        float = 0.0
 
     material: MaterialInfo = field(default_factory=MaterialInfo)
 
@@ -148,6 +150,8 @@ class SMPParser:
         if 0x0064 in blocks: self._parse_subset100(data, blocks[0x0064], smp)
 
         self._parse_lp_buffer(data, blocks.get(0x0276, (30423, 2523))[0], smp)
+        _parse_mercury_temperature(data, blocks, smp)
+        _resolve_mercury_density(smp)
 
         return smp
 
@@ -271,25 +275,28 @@ class SMPParser:
             if lo < v < hi:
                 setattr(smp, attr, v)
 
-        # 汞密度记录：逐字节扫描找起点
+        # Mercury density table: 17 byte records, with a shifting start offset.
         density_map = {}
-        i = 0
         payload = data[o:o+size]
-        while i + 17 <= len(payload):
-            d    = struct.unpack_from("<d", payload, i)[0]
-            flag = payload[i + 8]
-            temp = struct.unpack_from("<d", payload, i + 9)[0]
-            if flag == 1 and 13.0 < d < 14.0 and 0 < temp < 100:
-                break
-            i += 1
-        while i + 17 <= len(payload):
-            d    = struct.unpack_from("<d", payload, i)[0]
-            flag = payload[i + 8]
-            temp = struct.unpack_from("<d", payload, i + 9)[0]
-            if flag == 171: break
-            if flag == 1 and 13.0 < d < 14.0 and 0 < temp < 100:
-                density_map[round(temp, 2)] = d  # 以温度为key存储
-            i += 17
+        best_run = []
+        for start in range(0, max(0, len(payload) - 16)):
+            run = []
+            i = start
+            while i + 17 <= len(payload):
+                d = struct.unpack_from("<d", payload, i)[0]
+                flag = payload[i + 8]
+                temp = struct.unpack_from("<d", payload, i + 9)[0]
+                if flag == 171:
+                    break
+                if not (flag == 1 and 13.0 < d < 14.0 and 0.0 < temp < 100.0):
+                    break
+                run.append((round(temp, 2), d))
+                i += 17
+            if len(run) > len(best_run):
+                best_run = run
+        best_run = _longest_monotonic_density_run(best_run)
+        for temp, density in best_run:
+            density_map[temp] = density
         smp._density_map = density_map
 
         # 压力程序表
@@ -475,6 +482,88 @@ class SMPParser:
 # ══════════════════════════════════════════════════════════════════════
 # 工具函数
 # ══════════════════════════════════════════════════════════════════════
+
+def _parse_mercury_temperature(data, blocks, smp):
+    subset630 = blocks.get(0x0276)
+    if not subset630:
+        return
+
+    gap_start = 0
+    if 0x02C1 in blocks:
+        gap_start = blocks[0x02C1][0] + blocks[0x02C1][1]
+    gap_end = subset630[0]
+    if not (0 <= gap_start < gap_end <= len(data)):
+        return
+
+    marker = data.find(b"FREE", gap_start, gap_end)
+    candidates = []
+    if marker > gap_start:
+        for offset in range(max(gap_start, marker - 24), marker):
+            if offset + 8 > len(data):
+                continue
+            value = struct.unpack_from("<d", data, offset)[0]
+            if math.isfinite(value) and 10.0 < value < 40.0:
+                candidates.append(value)
+
+    if not candidates:
+        for offset in range(gap_start, gap_end - 7):
+            value = struct.unpack_from("<d", data, offset)[0]
+            if math.isfinite(value) and 10.0 < value < 40.0 and abs(value - round(value)) > 0.001:
+                candidates.append(value)
+
+    if candidates:
+        smp.mercury_temperature_C = float(candidates[0])
+
+
+def _longest_monotonic_density_run(records):
+    best = []
+    for start in range(len(records)):
+        current = [records[start]]
+        for record in records[start + 1:]:
+            previous_temp, previous_density = current[-1]
+            temp, density = record
+            if temp > previous_temp and density <= previous_density:
+                current.append(record)
+            else:
+                break
+        if len(current) > len(best):
+            best = current
+    return best
+
+
+def _resolve_mercury_density(smp):
+    if not smp._density_map:
+        return
+
+    temperatures = sorted(smp._density_map)
+    densities = [smp._density_map[temp] for temp in temperatures]
+    if smp.mercury_temperature_C > 0:
+        smp.mercury_density_gmL = float(_linear_interpolate(smp.mercury_temperature_C, temperatures, densities))
+        return
+
+    if 23.0 in smp._density_map:
+        smp.mercury_density_gmL = smp._density_map[23.0]
+    else:
+        smp.mercury_density_gmL = densities[len(densities) // 2]
+
+
+def _linear_interpolate(x, x_values, y_values):
+    if not x_values:
+        return 0.0
+    if x <= x_values[0]:
+        return y_values[0]
+    if x >= x_values[-1]:
+        return y_values[-1]
+    for i in range(1, len(x_values)):
+        if x <= x_values[i]:
+            x0, x1 = x_values[i - 1], x_values[i]
+            y0, y1 = y_values[i - 1], y_values[i]
+            if x1 == x0:
+                return y0
+            fraction = (x - x0) / (x1 - x0)
+            return y0 + fraction * (y1 - y0)
+    return y_values[-1]
+
 
 def _washburn(pressure_psia, contact_angle_deg, surface_tension_dynes_cm):
     P_pa  = pressure_psia * 6894.757

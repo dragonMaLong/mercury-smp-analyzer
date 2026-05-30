@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 from typing import Sequence
 
+from .metrics import summary_metrics
 from .models import MercuryResult
 
 
@@ -64,7 +65,18 @@ def _write_summary_sheet(sheet, results, header_fill, header_font, title_font, c
         "Software",
         "Advancing angle (deg)",
         "Surface tension (dynes/cm)",
-        "Total pore volume (mL/g)",
+        "Mercury temperature (C)",
+        "Mercury density (g/mL)",
+        "Total intrusion volume (mL/g)",
+        "Total pore area (m2/g)",
+        "Median pore diameter, volume (nm)",
+        "Median pore pressure, volume (psia)",
+        "Median pore diameter, area (nm)",
+        "Median pore pressure, area (psia)",
+        "Average pore diameter 4V/A (nm)",
+        "Bulk density at 0.50 psia (g/mL)",
+        "Apparent skeletal density (g/mL)",
+        "Porosity (%)",
         "Max pressure (psia)",
         "Data points",
     ]
@@ -76,6 +88,7 @@ def _write_summary_sheet(sheet, results, header_fill, header_font, title_font, c
         cell.alignment = center_alignment
 
     for row, result in enumerate(results, start=start_row + 1):
+        summary_metrics_result = summary_metrics(result)
         sheet.cell(row, 1, _text(result.metadata.get("file_name")))
         sheet.cell(row, 2, _text(result.metadata.get("sample_name")))
         sheet.cell(row, 3, _text(result.metadata.get("operator")))
@@ -86,17 +99,29 @@ def _write_summary_sheet(sheet, results, header_fill, header_font, title_font, c
         sheet.cell(row, 8, _software_text(result))
         sheet.cell(row, 9, _number(result.metadata.get("adv_contact_angle_deg")))
         sheet.cell(row, 10, _number(result.metadata.get("surface_tension_dynes_cm")))
-        sheet.cell(row, 11, result.total_pore_volume)
-        sheet.cell(row, 12, result.max_pressure)
-        sheet.cell(row, 13, result.data_point_count)
+        sheet.cell(row, 11, _number(result.metadata.get("mercury_temperature_C")))
+        sheet.cell(row, 12, _number(result.metadata.get("mercury_density_gmL")))
+        sheet.cell(row, 13, summary_metrics_result.total_intrusion_volume)
+        sheet.cell(row, 14, summary_metrics_result.total_pore_area)
+        sheet.cell(row, 15, summary_metrics_result.median_volume_diameter)
+        sheet.cell(row, 16, summary_metrics_result.median_volume_pressure)
+        sheet.cell(row, 17, summary_metrics_result.median_area_diameter)
+        sheet.cell(row, 18, summary_metrics_result.median_area_pressure)
+        sheet.cell(row, 19, summary_metrics_result.average_pore_diameter)
+        sheet.cell(row, 20, summary_metrics_result.bulk_density)
+        sheet.cell(row, 21, summary_metrics_result.apparent_density)
+        sheet.cell(row, 22, summary_metrics_result.porosity)
+        sheet.cell(row, 23, result.max_pressure)
+        sheet.cell(row, 24, result.data_point_count)
 
     sheet.freeze_panes = "A6"
-    sheet.auto_filter.ref = f"A{start_row}:M{start_row + len(results)}"
+    sheet.auto_filter.ref = f"A{start_row}:X{start_row + len(results)}"
 
 
 def _write_result_sheet(sheet, result: MercuryResult, header_fill, header_font, title_font, center_alignment) -> None:
     sheet["A1"] = _text(result.metadata.get("file_name"))
     sheet["A1"].font = title_font
+    summary_metrics_result = summary_metrics(result)
 
     metadata_rows = [
         ("Sample name", _text(result.metadata.get("sample_name"))),
@@ -108,14 +133,25 @@ def _write_result_sheet(sheet, result: MercuryResult, header_fill, header_font, 
         ("Software", _software_text(result)),
         ("Advancing angle (deg)", _number(result.metadata.get("adv_contact_angle_deg"))),
         ("Surface tension (dynes/cm)", _number(result.metadata.get("surface_tension_dynes_cm"))),
-        ("Total pore volume (mL/g)", result.total_pore_volume),
+        ("Mercury temperature (C)", _number(result.metadata.get("mercury_temperature_C"))),
+        ("Mercury density (g/mL)", _number(result.metadata.get("mercury_density_gmL"))),
+        ("Total intrusion volume (mL/g)", summary_metrics_result.total_intrusion_volume),
+        ("Total pore area (m2/g)", summary_metrics_result.total_pore_area),
+        ("Median pore diameter, volume (nm)", summary_metrics_result.median_volume_diameter),
+        ("Median pore pressure, volume (psia)", summary_metrics_result.median_volume_pressure),
+        ("Median pore diameter, area (nm)", summary_metrics_result.median_area_diameter),
+        ("Median pore pressure, area (psia)", summary_metrics_result.median_area_pressure),
+        ("Average pore diameter 4V/A (nm)", summary_metrics_result.average_pore_diameter),
+        ("Bulk density at 0.50 psia (g/mL)", summary_metrics_result.bulk_density),
+        ("Apparent skeletal density (g/mL)", summary_metrics_result.apparent_density),
+        ("Porosity (%)", summary_metrics_result.porosity),
         ("Max pressure (psia)", result.max_pressure),
     ]
     for row, (name, value) in enumerate(metadata_rows, start=3):
         sheet.cell(row, 1, name).font = header_font
         sheet.cell(row, 2, value)
 
-    table_row = 14
+    table_row = len(metadata_rows) + 5
     headers = [
         "Point",
         "Cycle",

@@ -11,7 +11,7 @@ os.environ.setdefault("PYQTGRAPH_QT_LIB", "PyQt5")
 import pyqtgraph as pg
 from pyqtgraph.Qt import QT_LIB, QtCore, QtGui, QtWidgets
 
-from mercury_app.core import calculate_microactive, export_results_xlsx, load_smp, metrics_for_pressure_range
+from mercury_app.core import calculate_microactive, export_results_xlsx, load_smp, metrics_for_pressure_range, summary_metrics
 from mercury_app.ui.plots import (
     DEFAULT_COLORS,
     make_plot,
@@ -1021,6 +1021,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 continue
             table = self.metric_tables[index]
             metrics = metrics_for_pressure_range(result, pressure_min, pressure_max)
+            summary = summary_metrics(result)
             rows = metrics.as_display_rows()
 
             summary_rows = [
@@ -1039,7 +1040,34 @@ class MainWindow(QtWidgets.QMainWindow):
                 ("Advancing contact angle", self._metric_parameter_text(result, "adv_contact_angle_deg", "deg")),
                 ("Surface tension", self._metric_parameter_text(result, "surface_tension_dynes_cm", "dynes/cm")),
                 ("Mass", f"{result.metadata.get('sample_mass_g', 0.0):.6g} g"),
-                ("Total pore volume", f"{result.total_pore_volume:.6g} mL/g"),
+                (
+                    "Total intrusion volume",
+                    f"{summary.total_intrusion_volume:.6g} mL/g @ {summary.total_intrusion_pressure:.6g} psia",
+                ),
+                (
+                    "Total pore area",
+                    f"{summary.total_pore_area:.6g} m^2/g @ {summary.total_intrusion_pressure:.6g} psia",
+                ),
+                (
+                    "Median pore diameter (volume)",
+                    f"{summary.median_volume_diameter:.6g} nm @ {summary.median_volume_pressure:.6g} psia, "
+                    f"{summary.median_volume:.6g} mL/g",
+                ),
+                (
+                    "Median pore diameter (area)",
+                    f"{summary.median_area_diameter:.6g} nm @ {summary.median_area_pressure:.6g} psia, "
+                    f"{summary.median_area:.6g} m^2/g",
+                ),
+                ("Average pore diameter (4V/A)", f"{summary.average_pore_diameter:.6g} nm"),
+                (
+                    "Bulk density",
+                    f"{summary.bulk_density:.6g} g/mL @ {summary.bulk_density_pressure:.2f} psia",
+                ),
+                (
+                    "Apparent skeletal density",
+                    f"{summary.apparent_density:.6g} g/mL @ {summary.apparent_density_pressure:.6g} psia",
+                ),
+                ("Porosity", f"{summary.porosity:.6g} %"),
                 ("Max pressure", f"{result.max_pressure:.6g} psia"),
                 ("Data points", str(result.data_point_count)),
             ]

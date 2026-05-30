@@ -145,6 +145,25 @@ class SegmentMetrics:
         ]
 
 
+@dataclass(frozen=True)
+class PoreSummary:
+    total_intrusion_pressure: float
+    total_intrusion_volume: float
+    total_pore_area: float
+    median_volume_pressure: float
+    median_volume_diameter: float
+    median_volume: float
+    median_area_pressure: float
+    median_area_diameter: float
+    median_area: float
+    average_pore_diameter: float
+    bulk_density_pressure: float
+    bulk_density: float
+    apparent_density_pressure: float
+    apparent_density: float
+    porosity: float
+
+
 def _fmt(value: float, suffix: str) -> str:
     if not np.isfinite(value):
         return ""
