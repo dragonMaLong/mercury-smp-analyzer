@@ -124,45 +124,36 @@ def plot_distribution_multi(
     results,
     visible: list[bool],
     colors: list[str],
-) -> None:
+) -> list[dict[str, np.ndarray] | None]:
     plot.clear()
     plot.setLogMode(x=False, y=False)
     all_x = []
     all_y = []
+    curve_data_by_index: list[dict[str, np.ndarray] | None] = [None] * len(results)
     for index, result in enumerate(results):
         if index >= len(visible) or not visible[index]:
             continue
         color = colors[index % len(colors)]
-        mask = (
-            np.isfinite(result.diameter)
-            & (result.diameter > 0)
-            & np.isfinite(result.log_diff_intrusion)
-            & (result.is_extrusion < 0.5)
-        )
-        x_values = result.diameter[mask]
-        y_values = np.maximum(result.log_diff_intrusion[mask], 0.0)
-        order = np.argsort(x_values)
-        ordered_x = x_values[order]
-        ordered_y = y_values[order]
-        curve_x, curve_y = smooth_log_distribution_curve(ordered_x, ordered_y)
+        data = distribution_plot_data(result)
+        curve_data_by_index[index] = data
         plot.plot(
-            curve_x,
-            curve_y,
+            data["curve_x"],
+            data["curve_y"],
             pen=pg.mkPen(color, width=2),
             name=_legend_name(result),
         )
         plot.plot(
-            ordered_x,
-            ordered_y,
+            data["x"],
+            data["y"],
             pen=None,
             symbol="o",
             symbolSize=5,
             symbolPen=pg.mkPen(color, width=1),
             symbolBrush=pg.mkBrush("#ffffff"),
         )
-        if x_values.size:
-            all_x.append(x_values)
-            all_y.append(y_values)
+        if data["x"].size:
+            all_x.append(data["x"])
+            all_y.append(data["y"])
 
     plot.setLabel("bottom", "Pore Diameter (nm)")
     plot.setLogMode(x=True, y=False)
@@ -171,6 +162,67 @@ def plot_distribution_multi(
     if x_values.size:
         plot.setXRange(float(np.log10(np.nanmin(x_values))), float(np.log10(np.nanmax(x_values))), padding=0.03)
         plot.setYRange(float(np.nanmin(y_values)), float(np.nanmax(y_values)), padding=0.08)
+    return curve_data_by_index
+
+
+def distribution_plot_data(result) -> dict[str, np.ndarray]:
+    mask = (
+        np.isfinite(result.diameter)
+        & (result.diameter > 0)
+        & np.isfinite(result.log_diff_intrusion)
+        & (result.is_extrusion < 0.5)
+    )
+    x_values = result.diameter[mask]
+    y_values = np.maximum(result.log_diff_intrusion[mask], 0.0)
+    order = np.argsort(x_values)
+    ordered_x = x_values[order]
+    ordered_y = y_values[order]
+    curve_x, curve_y = smooth_log_distribution_curve(ordered_x, ordered_y)
+    return {
+        "x": ordered_x,
+        "y": ordered_y,
+        "curve_x": curve_x,
+        "curve_y": curve_y,
+    }
+
+
+def clip_log_curve_to_range(
+    curve_x: np.ndarray,
+    curve_y: np.ndarray,
+    x_min: float,
+    x_max: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    mask = np.isfinite(curve_x) & (curve_x > 0) & np.isfinite(curve_y)
+    curve_x = np.asarray(curve_x[mask], dtype=float)
+    curve_y = np.asarray(curve_y[mask], dtype=float)
+    if curve_x.size == 0:
+        return np.array([]), np.array([])
+
+    order = np.argsort(curve_x)
+    curve_x = curve_x[order]
+    curve_y = curve_y[order]
+    lo, hi = sorted((float(x_min), float(x_max)))
+    lo = max(lo, float(curve_x[0]))
+    hi = min(hi, float(curve_x[-1]))
+    if not (np.isfinite(lo) and np.isfinite(hi)) or lo > hi:
+        return np.array([]), np.array([])
+
+    if curve_x.size == 1 or lo == hi:
+        return np.array([lo]), np.array([float(np.interp(lo, curve_x, curve_y))])
+
+    log_curve_x = np.log10(curve_x)
+
+    def interpolate_y(x_value: float) -> float:
+        return float(np.interp(np.log10(x_value), log_curve_x, curve_y))
+
+    inner_mask = (curve_x > lo) & (curve_x < hi)
+    selected_x = [lo]
+    selected_y = [interpolate_y(lo)]
+    selected_x.extend(curve_x[inner_mask].tolist())
+    selected_y.extend(curve_y[inner_mask].tolist())
+    selected_x.append(hi)
+    selected_y.append(interpolate_y(hi))
+    return np.asarray(selected_x, dtype=float), np.asarray(selected_y, dtype=float)
 
 
 def _plot_cycle(

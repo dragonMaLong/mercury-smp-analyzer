@@ -14,10 +14,10 @@ from pyqtgraph.Qt import QT_LIB, QtCore, QtGui, QtWidgets
 from mercury_app.core import calculate_microactive, export_results_xlsx, load_smp, metrics_for_pressure_range, summary_metrics
 from mercury_app.ui.plots import (
     DEFAULT_COLORS,
+    clip_log_curve_to_range,
     make_plot,
     plot_distribution_multi,
     plot_pressure_volume_multi,
-    smooth_log_distribution_curve,
 )
 
 
@@ -55,6 +55,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.test_time_sort_ascending = False
         self.region = None
         self.pressure_region_is_log = False
+        self.distribution_curve_data = []
         self.distribution_region = None
         self.distribution_selected_curve = None
         self.distribution_selected_points = None
@@ -411,7 +412,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.update_metrics()
 
     def _redraw_plots(self) -> None:
-        plot_distribution_multi(self.distribution_plot, self.results, self.visible_results, self.sample_colors)
+        self.distribution_curve_data = plot_distribution_multi(
+            self.distribution_plot,
+            self.results,
+            self.visible_results,
+            self.sample_colors,
+        )
         plot_pressure_volume_multi(self.pressure_plot, self.results, self.visible_results, self.sample_colors)
 
     def _build_metric_tabs(self, active_index: int | None = None) -> None:
@@ -1139,10 +1145,23 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.distribution_region is not None:
             self.distribution_region.setRegion(self._distribution_region_values(x_values))
             self.distribution_region.setVisible(True)
-        curve_x, curve_y = smooth_log_distribution_curve(x_values, y_values)
+        curve_x, curve_y = self._selected_distribution_curve_from_full_curve(x_values)
         self.distribution_selected_curve.setData(curve_x, curve_y)
         if self.distribution_selected_points is not None:
             self.distribution_selected_points.setData(x_values, y_values)
+
+    def _selected_distribution_curve_from_full_curve(self, selected_x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        if self.active_index >= len(self.distribution_curve_data):
+            return np.array([]), np.array([])
+        data = self.distribution_curve_data[self.active_index]
+        if not data:
+            return np.array([]), np.array([])
+        return clip_log_curve_to_range(
+            data["curve_x"],
+            data["curve_y"],
+            float(np.nanmin(selected_x)),
+            float(np.nanmax(selected_x)),
+        )
 
     def _clear_distribution_selection_data(self) -> None:
         if self.distribution_selected_curve is not None:
