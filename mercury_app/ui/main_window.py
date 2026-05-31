@@ -21,6 +21,11 @@ from mercury_app.ui.plots import (
 )
 
 
+APP_NAME = "Mercury SMP Analyzer"
+APP_USER_MODEL_ID = "MercurySmpAnalyzer.En"
+APP_ICON_FILE = "mercury-smp-app-flat-wetting.ico"
+
+
 class SelectAllCheckBox(QtWidgets.QCheckBox):
     def nextCheckState(self) -> None:
         if self.checkState() == QtCore.Qt.Checked:
@@ -61,7 +66,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.distribution_selected_points = None
         self._metrics_pending = False
 
-        self.setWindowTitle(f"Mercury Intrusion MVP ({QT_LIB})")
+        self.setWindowTitle(APP_NAME)
         self.resize(1200, 760)
 
         open_button = QtWidgets.QPushButton("Open SMP")
@@ -339,7 +344,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.visible_results = [True] * len(self.results)
         self.active_index = 0
         self.result = self.results[0] if self.results else None
-        self.setWindowTitle(f"Mercury Intrusion MVP ({QT_LIB}) - {len(self.results)} sample(s)")
+        self.setWindowTitle(APP_NAME)
 
         self._build_metric_tabs()
         self._redraw_plots()
@@ -386,7 +391,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.active_index = 0
             self.result = self.results[0]
 
-        self.setWindowTitle(f"Mercury Intrusion MVP ({QT_LIB}) - {len(self.results)} sample(s)")
+        self.setWindowTitle(APP_NAME)
         self._build_metric_tabs()
         self._redraw_plots()
         self._add_distribution_selection_items()
@@ -579,7 +584,7 @@ class MainWindow(QtWidgets.QMainWindow):
         target_index = min(index, len(self.results) - 1) if self.results else 0
         self.active_index = target_index
         self.result = self.results[target_index] if self.results else None
-        self.setWindowTitle(f"Mercury Intrusion MVP ({QT_LIB}) - {len(self.results)} sample(s)")
+        self.setWindowTitle(APP_NAME)
 
         self._build_metric_tabs()
         if self.results:
@@ -1180,10 +1185,39 @@ class MainWindow(QtWidgets.QMainWindow):
         return [x_min, x_max]
 
 
+def _resource_path(relative_path: str) -> Path:
+    bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
+    return bundle_root / relative_path
+
+
+def _set_windows_app_id() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+    except Exception:
+        pass
+
+
+def _app_icon() -> QtGui.QIcon:
+    icon_path = _resource_path(f"assets/{APP_ICON_FILE}")
+    return QtGui.QIcon(str(icon_path)) if icon_path.exists() else QtGui.QIcon()
+
+
 def run(argv: list[str] | None = None) -> int:
+    _set_windows_app_id()
     app = QtWidgets.QApplication(argv or sys.argv)
+    app.setApplicationName(APP_NAME)
+    app.setApplicationDisplayName(APP_NAME)
     app.setFont(QtGui.QFont("Microsoft YaHei UI", 9))
+    icon = _app_icon()
+    if not icon.isNull():
+        app.setWindowIcon(icon)
     window = MainWindow()
+    if not icon.isNull():
+        window.setWindowIcon(icon)
     window.show()
     exec_func = getattr(app, "exec", app.exec_)
     return exec_func()

@@ -23,3 +23,11 @@ env/
 *.log
 *.tmp
 ~$*
+
+build/
+dist/
+*.spec
+
+assets/*.png
+assets/mercury-smp-app.ico
+!assets/mercury-smp-app-flat-wetting.ico
