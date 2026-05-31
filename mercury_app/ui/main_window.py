@@ -34,6 +34,116 @@ class SelectAllCheckBox(QtWidgets.QCheckBox):
             self.setCheckState(QtCore.Qt.Checked)
 
 
+Signal = getattr(QtCore, "Signal", None) or getattr(QtCore, "pyqtSignal")
+
+
+class SampleTableWidget(QtWidgets.QTableWidget):
+    rowMoveRequested = Signal(int, int)
+    LONG_PRESS_MS = 220
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._drag_source_row = -1
+        self._drag_start_pos = QtCore.QPoint()
+        self._drag_timer = QtCore.QElapsedTimer()
+        self._dragging_row = False
+        self._drop_indicator = QtWidgets.QFrame(self.viewport())
+        self._drop_indicator.setFixedHeight(2)
+        self._drop_indicator.setStyleSheet("background: #2563eb;")
+        self._drop_indicator.hide()
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == QtCore.Qt.LeftButton:
+            row = self.rowAt(event.pos().y())
+            if row >= 0:
+                self._drag_source_row = row
+                self._drag_start_pos = event.pos()
+                self._drag_timer.start()
+                self._dragging_row = False
+            else:
+                self._reset_row_drag()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if not (event.buttons() & QtCore.Qt.LeftButton) or self._drag_source_row < 0:
+            super().mouseMoveEvent(event)
+            return
+
+        distance = (event.pos() - self._drag_start_pos).manhattanLength()
+        if not self._dragging_row:
+            if self._drag_timer.elapsed() < self.LONG_PRESS_MS or distance < QtWidgets.QApplication.startDragDistance():
+                event.accept()
+                return
+            self._dragging_row = True
+            self.setCursor(QtCore.Qt.ClosedHandCursor)
+
+        insert_row = self._drop_insert_row(event.pos())
+        self._show_drop_indicator(insert_row)
+        self._auto_scroll(event.pos())
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == QtCore.Qt.LeftButton and self._dragging_row:
+            source_row = self._drag_source_row
+            insert_row = self._drop_insert_row(event.pos())
+            self._reset_row_drag()
+            if source_row >= 0:
+                self.rowMoveRequested.emit(source_row, insert_row)
+            event.accept()
+            return
+
+        if event.button() == QtCore.Qt.LeftButton:
+            self._reset_row_drag()
+        super().mouseReleaseEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        if not self._dragging_row:
+            self._drop_indicator.hide()
+        super().leaveEvent(event)
+
+    def _reset_row_drag(self) -> None:
+        if self._dragging_row:
+            self.unsetCursor()
+        self._drag_source_row = -1
+        self._dragging_row = False
+        self._drop_indicator.hide()
+
+    def _drop_insert_row(self, position: QtCore.QPoint) -> int:
+        row_count = self.rowCount()
+        if row_count == 0:
+            return 0
+        row = self.rowAt(position.y())
+        if row < 0:
+            return 0 if position.y() < 0 else row_count
+        midpoint = self.rowViewportPosition(row) + self.rowHeight(row) / 2
+        return row if position.y() < midpoint else row + 1
+
+    def _show_drop_indicator(self, insert_row: int) -> None:
+        row_count = self.rowCount()
+        if row_count == 0:
+            self._drop_indicator.hide()
+            return
+        if insert_row <= 0:
+            y = self.rowViewportPosition(0)
+        elif insert_row >= row_count:
+            last_row = row_count - 1
+            y = self.rowViewportPosition(last_row) + self.rowHeight(last_row)
+        else:
+            y = self.rowViewportPosition(insert_row)
+        self._drop_indicator.setGeometry(0, max(0, int(y) - 1), self.viewport().width(), 2)
+        self._drop_indicator.show()
+        self._drop_indicator.raise_()
+
+    def _auto_scroll(self, position: QtCore.QPoint) -> None:
+        margin = 24
+        step = 18
+        scroll_bar = self.verticalScrollBar()
+        if position.y() < margin:
+            scroll_bar.setValue(scroll_bar.value() - step)
+        elif position.y() > self.viewport().height() - margin:
+            scroll_bar.setValue(scroll_bar.value() + step)
+
+
 def _check_state_value(state) -> int:
     value = getattr(state, "value", state)
     return int(value)
@@ -44,6 +154,16 @@ FILE_COLUMN = 1
 TEST_TIME_COLUMN = 2
 ANGLE_COLUMN = 3
 TENSION_COLUMN = 4
+REGION_LINE_COLOR = "#2563eb"
+REGION_LINE_HOVER_COLOR = "#dc2626"
+REGION_FILL_COLOR = (37, 99, 235, 34)
+REGION_FILL_HOVER_COLOR = (37, 99, 235, 48)
+
+
+def _region_pen(color: str) -> QtGui.QPen:
+    pen = pg.mkPen(color, width=3)
+    pen.setStyle(QtCore.Qt.DashLine)
+    return pen
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -62,9 +182,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pressure_region_is_log = False
         self.distribution_curve_data = []
         self.distribution_region = None
+        self.distribution_region_is_log = False
         self.distribution_selected_curve = None
         self.distribution_selected_points = None
         self._metrics_pending = False
+        self._syncing_region_changes = False
 
         self.setWindowTitle(APP_NAME)
         self.resize(1200, 760)
@@ -132,7 +254,7 @@ class MainWindow(QtWidgets.QMainWindow):
             """
         )
 
-        self.sample_list = QtWidgets.QTableWidget(0, 5)
+        self.sample_list = SampleTableWidget(0, 5)
         self.sample_list.setHorizontalHeaderLabels(["", "File name", "Test time", "Angle", "Surface"])
         sample_header = self.sample_list.horizontalHeader()
         sample_header.setVisible(True)
@@ -169,6 +291,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sample_list.currentCellChanged.connect(self.on_active_cell_changed)
         self.sample_list.itemChanged.connect(self.on_sample_item_changed)
         self.sample_list.itemClicked.connect(self.on_sample_item_clicked)
+        self.sample_list.rowMoveRequested.connect(self.move_sample_row)
         self.sample_list.customContextMenuRequested.connect(self.show_sample_context_menu)
         self.sample_list.horizontalScrollBar().valueChanged.connect(self._position_header_controls)
         self.sample_list.setStyleSheet(
@@ -271,7 +394,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _connect_distribution_log_controls(self) -> None:
         controls = self.distribution_plot.getPlotItem().ctrl
         if hasattr(controls, "logXCheck"):
-            controls.logXCheck.stateChanged.connect(self.queue_metrics_update)
+            controls.logXCheck.stateChanged.connect(self.on_distribution_log_changed)
 
     def open_file(self) -> None:
         file_paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
@@ -360,14 +483,7 @@ class MainWindow(QtWidgets.QMainWindow):
         region_lo = lo + span * 0.25
         region_hi = lo + span * 0.55
 
-        self.pressure_region_is_log = self._pressure_log_enabled()
-        self.region = pg.LinearRegionItem(
-            self._pressure_to_region_values(region_lo, region_hi),
-            bounds=self._pressure_to_region_values(lo, hi),
-            movable=True,
-        )
-        self.region.sigRegionChanged.connect(self.queue_metrics_update)
-        self.pressure_plot.addItem(self.region, ignoreBounds=True)
+        self._add_pressure_region([region_lo, region_hi], pressure)
         self.update_metrics()
 
     def append_files(self, file_paths) -> None:
@@ -406,14 +522,7 @@ class MainWindow(QtWidgets.QMainWindow):
             span = hi - lo
             raw_region = [lo + span * 0.25, lo + span * 0.55]
 
-        self.pressure_region_is_log = self._pressure_log_enabled()
-        self.region = pg.LinearRegionItem(
-            self._pressure_to_region_values(raw_region[0], raw_region[1]),
-            bounds=self._pressure_to_region_values(np.nanmin(pressure), np.nanmax(pressure)),
-            movable=True,
-        )
-        self.region.sigRegionChanged.connect(self.queue_metrics_update)
-        self.pressure_plot.addItem(self.region, ignoreBounds=True)
+        self._add_pressure_region(raw_region, pressure)
         self.update_metrics()
 
     def _redraw_plots(self) -> None:
@@ -606,14 +715,7 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             raw_region = self._clamp_pressure_region(raw_region, pressure)
 
-        self.pressure_region_is_log = self._pressure_log_enabled()
-        self.region = pg.LinearRegionItem(
-            self._pressure_to_region_values(raw_region[0], raw_region[1]),
-            bounds=self._pressure_to_region_values(np.nanmin(pressure), np.nanmax(pressure)),
-            movable=True,
-        )
-        self.region.sigRegionChanged.connect(self.queue_metrics_update)
-        self.pressure_plot.addItem(self.region, ignoreBounds=True)
+        self._add_pressure_region(raw_region, pressure)
         self.update_metrics()
 
     def _clear_sample_list(self) -> None:
@@ -711,6 +813,39 @@ class MainWindow(QtWidgets.QMainWindow):
         self.active_index = active_index
         self.result = self.results[active_index] if self.results else None
 
+        self._build_metric_tabs_with_options(active_index=active_index, preserve_column_widths=True)
+        self._refresh_visibility_dependent_ui()
+
+    def move_sample_row(self, source_index: int, insert_index: int) -> None:
+        if len(self.results) < 2 or not (0 <= source_index < len(self.results)):
+            return
+
+        insert_index = max(0, min(int(insert_index), len(self.results)))
+        if insert_index in (source_index, source_index + 1):
+            return
+
+        active_result = self.result
+        moved_result = self.results.pop(source_index)
+        moved_visible = self.visible_results.pop(source_index)
+        moved_color = self.sample_colors.pop(source_index) if source_index < len(self.sample_colors) else None
+
+        if insert_index > source_index:
+            insert_index -= 1
+
+        self.results.insert(insert_index, moved_result)
+        self.visible_results.insert(insert_index, moved_visible)
+        if moved_color is not None:
+            self.sample_colors.insert(insert_index, moved_color)
+
+        active_index = insert_index
+        if active_result is not None:
+            for index, result in enumerate(self.results):
+                if result is active_result:
+                    active_index = index
+                    break
+
+        self.active_index = active_index
+        self.result = self.results[active_index] if self.results else None
         self._build_metric_tabs_with_options(active_index=active_index, preserve_column_widths=True)
         self._refresh_visibility_dependent_ui()
 
@@ -883,14 +1018,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if raw_region is not None:
             pressure = self._all_pressure_values()
             if pressure.size:
-                self.pressure_region_is_log = self._pressure_log_enabled()
-                self.region = pg.LinearRegionItem(
-                    self._pressure_to_region_values(raw_region[0], raw_region[1]),
-                    bounds=self._pressure_to_region_values(np.nanmin(pressure), np.nanmax(pressure)),
-                    movable=True,
-                )
-                self.region.sigRegionChanged.connect(self.queue_metrics_update)
-                self.pressure_plot.addItem(self.region, ignoreBounds=True)
+                self._add_pressure_region(raw_region, pressure)
         self.update_metrics()
 
     def _all_pressure_values(self) -> np.ndarray:
@@ -918,12 +1046,46 @@ class MainWindow(QtWidgets.QMainWindow):
             return [region_lo, region_hi]
         return self._default_pressure_region(pressure)
 
+    def _make_selection_region(self, values, bounds=None, movable: bool = True):
+        region = pg.LinearRegionItem(
+            values,
+            bounds=bounds,
+            movable=movable,
+            brush=pg.mkBrush(*REGION_FILL_COLOR),
+            hoverBrush=pg.mkBrush(*REGION_FILL_HOVER_COLOR),
+            pen=_region_pen(REGION_LINE_COLOR),
+            hoverPen=_region_pen(REGION_LINE_HOVER_COLOR),
+            swapMode="block",
+        )
+        self._style_selection_region(region)
+        return region
+
+    @staticmethod
+    def _style_selection_region(region) -> None:
+        for line in getattr(region, "lines", []):
+            line.setPen(_region_pen(REGION_LINE_COLOR))
+            line.setHoverPen(_region_pen(REGION_LINE_HOVER_COLOR))
+            line.setCursor(QtCore.Qt.SizeHorCursor)
+
+    def _add_pressure_region(self, raw_region: list[float], pressure: np.ndarray) -> None:
+        if pressure.size == 0:
+            return
+        raw_region = self._clamp_pressure_region(raw_region, pressure)
+        self.pressure_region_is_log = self._pressure_log_enabled()
+        self.region = self._make_selection_region(
+            self._pressure_to_region_values(raw_region[0], raw_region[1]),
+            bounds=self._pressure_to_region_values(np.nanmin(pressure), np.nanmax(pressure)),
+            movable=True,
+        )
+        self.region.sigRegionChanged.connect(self.on_pressure_region_changed)
+        self.pressure_plot.addItem(self.region, ignoreBounds=True)
+
     def _remove_region(self) -> None:
         if self.region is None:
             self._remove_distribution_selection_items()
             return
         try:
-            self.region.sigRegionChanged.disconnect(self.queue_metrics_update)
+            self.region.sigRegionChanged.disconnect(self.on_pressure_region_changed)
         except (RuntimeError, TypeError):
             pass
         try:
@@ -934,15 +1096,24 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pressure_region_is_log = False
         self._remove_distribution_selection_items()
 
+    def on_pressure_region_changed(self) -> None:
+        if self._syncing_region_changes:
+            return
+        self.queue_metrics_update()
+
     def on_pressure_log_changed(self) -> None:
         if not self.results or self.region is None:
             return
         raw_lo, raw_hi = self._region_to_pressure_values(*self.region.getRegion())
         self.pressure_region_is_log = self._pressure_log_enabled()
         pressure = self._all_pressure_values()
-        if pressure.size:
-            self.region.setBounds(self._pressure_to_region_values(np.nanmin(pressure), np.nanmax(pressure)))
-        self.region.setRegion(self._pressure_to_region_values(raw_lo, raw_hi))
+        self._syncing_region_changes = True
+        try:
+            if pressure.size:
+                self.region.setBounds(self._pressure_to_region_values(np.nanmin(pressure), np.nanmax(pressure)))
+            self.region.setRegion(self._pressure_to_region_values(raw_lo, raw_hi))
+        finally:
+            self._syncing_region_changes = False
         self.queue_metrics_update()
 
     def _pressure_log_enabled(self) -> bool:
@@ -970,8 +1141,10 @@ class MainWindow(QtWidgets.QMainWindow):
             return None
 
     def _add_distribution_selection_items(self) -> None:
-        self.distribution_region = pg.LinearRegionItem([0.0, 0.0], movable=False)
+        self.distribution_region_is_log = self._distribution_log_enabled()
+        self.distribution_region = self._make_selection_region([0.0, 0.0], movable=True)
         self.distribution_region.setVisible(False)
+        self.distribution_region.sigRegionChanged.connect(self.on_distribution_region_changed)
         self.distribution_plot.addItem(self.distribution_region, ignoreBounds=True)
         self.distribution_selected_curve = self.distribution_plot.plot(
             [],
@@ -991,10 +1164,15 @@ class MainWindow(QtWidgets.QMainWindow):
     def _remove_distribution_selection_items(self) -> None:
         if self.distribution_region is not None:
             try:
+                self.distribution_region.sigRegionChanged.disconnect(self.on_distribution_region_changed)
+            except (RuntimeError, TypeError):
+                pass
+            try:
                 self.distribution_plot.removeItem(self.distribution_region)
             except RuntimeError:
                 pass
             self.distribution_region = None
+            self.distribution_region_is_log = False
         if self.distribution_selected_curve is not None:
             try:
                 self.distribution_plot.removeItem(self.distribution_selected_curve)
@@ -1007,6 +1185,158 @@ class MainWindow(QtWidgets.QMainWindow):
             except RuntimeError:
                 pass
             self.distribution_selected_points = None
+
+    def on_distribution_region_changed(self) -> None:
+        if self._syncing_region_changes or self.distribution_region is None:
+            return
+        if self.result is None or self.region is None:
+            return
+        if self.active_index >= len(self.visible_results) or not self.visible_results[self.active_index]:
+            return
+
+        try:
+            diameter_min, diameter_max = self._region_to_diameter_values(*self.distribution_region.getRegion())
+        except RuntimeError:
+            return
+
+        pressure_region = self._pressure_from_diameter_range(self.result, diameter_min, diameter_max)
+        if pressure_region is None:
+            return
+
+        pressure = self._all_pressure_values()
+        if pressure.size:
+            pressure_region = self._clamp_pressure_region(pressure_region, pressure)
+
+        self.pressure_region_is_log = self._pressure_log_enabled()
+        self._syncing_region_changes = True
+        try:
+            if pressure.size:
+                self.region.setBounds(self._pressure_to_region_values(np.nanmin(pressure), np.nanmax(pressure)))
+            self.region.setRegion(self._pressure_to_region_values(pressure_region[0], pressure_region[1]))
+        finally:
+            self._syncing_region_changes = False
+        self.queue_metrics_update()
+
+    def on_distribution_log_changed(self) -> None:
+        if self.distribution_region is None:
+            return
+        raw_region = self._current_distribution_region()
+        self.distribution_region_is_log = self._distribution_log_enabled()
+        self._syncing_region_changes = True
+        try:
+            self._update_distribution_region_bounds()
+        finally:
+            self._syncing_region_changes = False
+        if raw_region is not None:
+            self._set_distribution_region(raw_region[0], raw_region[1], visible=self.distribution_region.isVisible())
+        self.queue_metrics_update()
+
+    def _distribution_log_enabled(self) -> bool:
+        controls = self.distribution_plot.getPlotItem().ctrl
+        return bool(getattr(controls, "logXCheck").isChecked()) if hasattr(controls, "logXCheck") else False
+
+    def _diameter_to_region_values(self, diameter_min: float, diameter_max: float) -> list[float]:
+        lo, hi = sorted((float(diameter_min), float(diameter_max)))
+        if self._distribution_log_enabled() and lo > 0 and hi > 0:
+            return [float(np.log10(lo)), float(np.log10(hi))]
+        return [lo, hi]
+
+    def _region_to_diameter_values(self, region_min: float, region_max: float) -> list[float]:
+        lo, hi = sorted((float(region_min), float(region_max)))
+        if self.distribution_region_is_log:
+            return [float(10.0**lo), float(10.0**hi)]
+        return [lo, hi]
+
+    def _current_distribution_region(self) -> list[float] | None:
+        if self.distribution_region is None:
+            return None
+        try:
+            return self._region_to_diameter_values(*self.distribution_region.getRegion())
+        except RuntimeError:
+            return None
+
+    def _set_distribution_region(self, diameter_min: float, diameter_max: float, *, visible: bool = True) -> None:
+        if self.distribution_region is None:
+            return
+        self.distribution_region_is_log = self._distribution_log_enabled()
+        self._syncing_region_changes = True
+        try:
+            self._update_distribution_region_bounds()
+            self.distribution_region.setRegion(self._diameter_to_region_values(diameter_min, diameter_max))
+            self.distribution_region.setVisible(visible)
+        finally:
+            self._syncing_region_changes = False
+
+    def _update_distribution_region_bounds(self) -> None:
+        if self.distribution_region is None:
+            return
+        bounds = self._active_diameter_bounds()
+        if bounds is None:
+            self.distribution_region.setBounds((None, None))
+            return
+        self.distribution_region.setBounds(self._diameter_to_region_values(bounds[0], bounds[1]))
+
+    def _active_diameter_bounds(self) -> list[float] | None:
+        if self.result is None:
+            return None
+        mask = (
+            np.isfinite(self.result.diameter)
+            & (self.result.diameter > 0)
+            & (self.result.is_extrusion < 0.5)
+        )
+        if not np.any(mask):
+            return None
+        return [float(np.nanmin(self.result.diameter[mask])), float(np.nanmax(self.result.diameter[mask]))]
+
+    @staticmethod
+    def _washburn_constant(result) -> float:
+        mask = (
+            np.isfinite(result.pressure)
+            & (result.pressure > 0)
+            & np.isfinite(result.diameter)
+            & (result.diameter > 0)
+            & (result.is_extrusion < 0.5)
+        )
+        if not np.any(mask):
+            mask = (
+                np.isfinite(result.pressure)
+                & (result.pressure > 0)
+                & np.isfinite(result.diameter)
+                & (result.diameter > 0)
+            )
+        if not np.any(mask):
+            return float("nan")
+        return float(np.nanmedian(result.pressure[mask] * result.diameter[mask]))
+
+    def _diameter_from_pressure_range(
+        self,
+        result,
+        pressure_min: float,
+        pressure_max: float,
+    ) -> list[float] | None:
+        constant = self._washburn_constant(result)
+        if not np.isfinite(constant) or constant <= 0:
+            return None
+        lo, hi = sorted((float(pressure_min), float(pressure_max)))
+        if lo <= 0 or hi <= 0:
+            return None
+        diameters = [constant / hi, constant / lo]
+        return sorted(diameters)
+
+    def _pressure_from_diameter_range(
+        self,
+        result,
+        diameter_min: float,
+        diameter_max: float,
+    ) -> list[float] | None:
+        constant = self._washburn_constant(result)
+        if not np.isfinite(constant) or constant <= 0:
+            return None
+        lo, hi = sorted((float(diameter_min), float(diameter_max)))
+        if lo <= 0 or hi <= 0:
+            return None
+        pressures = [constant / hi, constant / lo]
+        return sorted(pressures)
 
     def queue_metrics_update(self) -> None:
         if self._metrics_pending:
@@ -1127,6 +1457,21 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         lo, hi = sorted((float(pressure_min), float(pressure_max)))
+        diameter_region = self._diameter_from_pressure_range(self.result, lo, hi)
+        if diameter_region is None:
+            self._clear_distribution_selection_data()
+            if self.distribution_region is not None:
+                self.distribution_region.setVisible(False)
+            return
+
+        active_bounds = self._active_diameter_bounds()
+        if active_bounds is not None:
+            diameter_region[0] = max(active_bounds[0], min(diameter_region[0], active_bounds[1]))
+            diameter_region[1] = max(active_bounds[0], min(diameter_region[1], active_bounds[1]))
+
+        if self.distribution_region is not None:
+            self._set_distribution_region(diameter_region[0], diameter_region[1], visible=True)
+
         mask = (
             np.isfinite(self.result.pressure)
             & np.isfinite(self.result.diameter)
@@ -1136,10 +1481,13 @@ class MainWindow(QtWidgets.QMainWindow):
             & (self.result.pressure >= lo)
             & (self.result.pressure <= hi)
         )
+
+        curve_x, curve_y = self._selected_distribution_curve_from_full_curve(diameter_region[0], diameter_region[1])
+        self.distribution_selected_curve.setData(curve_x, curve_y)
+
         if not np.any(mask):
-            self._clear_distribution_selection_data()
-            if self.distribution_region is not None:
-                self.distribution_region.setVisible(False)
+            if self.distribution_selected_points is not None:
+                self.distribution_selected_points.setData([], [])
             return
 
         x_values = self.result.diameter[mask]
@@ -1148,15 +1496,14 @@ class MainWindow(QtWidgets.QMainWindow):
         x_values = x_values[order]
         y_values = y_values[order]
 
-        if self.distribution_region is not None:
-            self.distribution_region.setRegion(self._distribution_region_values(x_values))
-            self.distribution_region.setVisible(True)
-        curve_x, curve_y = self._selected_distribution_curve_from_full_curve(x_values)
-        self.distribution_selected_curve.setData(curve_x, curve_y)
         if self.distribution_selected_points is not None:
             self.distribution_selected_points.setData(x_values, y_values)
 
-    def _selected_distribution_curve_from_full_curve(self, selected_x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def _selected_distribution_curve_from_full_curve(
+        self,
+        diameter_min: float,
+        diameter_max: float,
+    ) -> tuple[np.ndarray, np.ndarray]:
         if self.active_index >= len(self.distribution_curve_data):
             return np.array([]), np.array([])
         data = self.distribution_curve_data[self.active_index]
@@ -1165,8 +1512,8 @@ class MainWindow(QtWidgets.QMainWindow):
         return clip_log_curve_to_range(
             data["curve_x"],
             data["curve_y"],
-            float(np.nanmin(selected_x)),
-            float(np.nanmax(selected_x)),
+            float(diameter_min),
+            float(diameter_max),
         )
 
     def _clear_distribution_selection_data(self) -> None:
@@ -1174,15 +1521,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.distribution_selected_curve.setData([], [])
         if self.distribution_selected_points is not None:
             self.distribution_selected_points.setData([], [])
-
-    def _distribution_region_values(self, diameters: np.ndarray) -> list[float]:
-        x_min = float(np.nanmin(diameters))
-        x_max = float(np.nanmax(diameters))
-        controls = self.distribution_plot.getPlotItem().ctrl
-        log_x_enabled = bool(getattr(controls, "logXCheck").isChecked()) if hasattr(controls, "logXCheck") else False
-        if log_x_enabled and x_min > 0 and x_max > 0:
-            return [float(np.log10(x_min)), float(np.log10(x_max))]
-        return [x_min, x_max]
 
 
 def _resource_path(relative_path: str) -> Path:
