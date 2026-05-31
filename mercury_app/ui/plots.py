@@ -136,13 +136,13 @@ def plot_distribution_multi(
         color = colors[index % len(colors)]
         data = distribution_plot_data(result)
         curve_data_by_index[index] = data
-        plot.plot(
+        curve_item = plot.plot(
             data["curve_x"],
             data["curve_y"],
             pen=pg.mkPen(color, width=2),
             name=_legend_name(result),
         )
-        plot.plot(
+        point_item = plot.plot(
             data["x"],
             data["y"],
             pen=None,
@@ -151,6 +151,7 @@ def plot_distribution_multi(
             symbolPen=pg.mkPen(color, width=1),
             symbolBrush=pg.mkBrush("#ffffff"),
         )
+        _link_visibility(curve_item, point_item)
         if data["x"].size:
             all_x.append(data["x"])
             all_y.append(data["y"])
@@ -163,6 +164,17 @@ def plot_distribution_multi(
         plot.setXRange(float(np.log10(np.nanmin(x_values))), float(np.log10(np.nanmax(x_values))), padding=0.03)
         plot.setYRange(float(np.nanmin(y_values)), float(np.nanmax(y_values)), padding=0.08)
     return curve_data_by_index
+
+
+def _link_visibility(primary_item, *linked_items) -> None:
+    original_set_visible = primary_item.setVisible
+
+    def set_visible(visible: bool) -> None:
+        original_set_visible(visible)
+        for item in linked_items:
+            item.setVisible(visible)
+
+    primary_item.setVisible = set_visible
 
 
 def distribution_plot_data(result) -> dict[str, np.ndarray]:
