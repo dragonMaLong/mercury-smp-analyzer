@@ -507,7 +507,8 @@ class MainWindow(QtWidgets.QMainWindow):
         size = self.select_all_check.sizeHint()
         x = header.sectionViewportPosition(VISIBLE_COLUMN) + (header.sectionSize(VISIBLE_COLUMN) - size.width()) // 2
         y = (header.height() - size.height()) // 2
-        self.select_all_check.setGeometry(max(0, x), max(0, y), size.width(), size.height())
+        self.select_all_check.setVisible(x + size.width() > 0 and x < header.width())
+        self.select_all_check.setGeometry(x, y, size.width(), size.height())
         if hasattr(self, "angle_info_button"):
             self._position_header_info_button(self.angle_info_button, ANGLE_COLUMN)
         if hasattr(self, "surface_info_button"):
@@ -520,7 +521,7 @@ class MainWindow(QtWidgets.QMainWindow):
         y = (header.height() - size.height()) // 2
         visible = x + size.width() > 0 and x < header.width()
         button.setVisible(visible)
-        button.setGeometry(max(0, x), max(0, y), size.width(), size.height())
+        button.setGeometry(x, y, size.width(), size.height())
 
     def show_header_info(self, title: str, text: str) -> None:
         html = (
