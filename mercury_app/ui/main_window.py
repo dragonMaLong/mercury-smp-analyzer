@@ -39,10 +39,13 @@ Signal = getattr(QtCore, "Signal", None) or getattr(QtCore, "pyqtSignal")
 
 class SampleTableWidget(QtWidgets.QTableWidget):
     rowMoveRequested = Signal(int, int)
+    smpFilesDropped = Signal(list)
     LONG_PRESS_MS = 220
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        self.setAcceptDrops(True)
+        self.viewport().setAcceptDrops(True)
         self._drag_source_row = -1
         self._drag_start_pos = QtCore.QPoint()
         self._drag_timer = QtCore.QElapsedTimer()
@@ -143,6 +146,41 @@ class SampleTableWidget(QtWidgets.QTableWidget):
         elif position.y() > self.viewport().height() - margin:
             scroll_bar.setValue(scroll_bar.value() + step)
 
+    def dragEnterEvent(self, event) -> None:
+        paths = self._smp_paths_from_mime_data(event.mimeData())
+        if paths:
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:
+        paths = self._smp_paths_from_mime_data(event.mimeData())
+        if paths:
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event) -> None:
+        paths = self._smp_paths_from_mime_data(event.mimeData())
+        if paths:
+            event.acceptProposedAction()
+            self.smpFilesDropped.emit(paths)
+            return
+        super().dropEvent(event)
+
+    @staticmethod
+    def _smp_paths_from_mime_data(mime_data) -> list[str]:
+        if not mime_data.hasUrls():
+            return []
+        paths = []
+        for url in mime_data.urls():
+            if not url.isLocalFile():
+                continue
+            path = Path(url.toLocalFile())
+            if path.is_file() and path.suffix.lower() == ".smp":
+                paths.append(str(path))
+        return paths
+
 
 def _check_state_value(state) -> int:
     value = getattr(state, "value", state)
@@ -214,11 +252,25 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self._connect_distribution_log_controls()
 
-        plot_stack = QtWidgets.QWidget()
-        plot_layout = QtWidgets.QVBoxLayout(plot_stack)
-        plot_layout.setContentsMargins(0, 0, 0, 0)
-        plot_layout.addWidget(self.distribution_plot, 3)
-        plot_layout.addWidget(self.pressure_plot, 2)
+        self.plot_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        self.plot_splitter.addWidget(self.distribution_plot)
+        self.plot_splitter.addWidget(self.pressure_plot)
+        self.plot_splitter.setChildrenCollapsible(False)
+        self.plot_splitter.setHandleWidth(8)
+        self.plot_splitter.setStretchFactor(0, 3)
+        self.plot_splitter.setStretchFactor(1, 2)
+        self.plot_splitter.setSizes([456, 304])
+        self.plot_splitter.setStyleSheet(
+            """
+            QSplitter::handle:vertical {
+                background: #e5e7eb;
+                margin: 2px 0;
+            }
+            QSplitter::handle:vertical:hover {
+                background: #93c5fd;
+            }
+            """
+        )
 
         side_panel = QtWidgets.QWidget()
         side_layout = QtWidgets.QVBoxLayout(side_panel)
@@ -292,6 +344,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sample_list.itemChanged.connect(self.on_sample_item_changed)
         self.sample_list.itemClicked.connect(self.on_sample_item_clicked)
         self.sample_list.rowMoveRequested.connect(self.move_sample_row)
+        self.sample_list.smpFilesDropped.connect(self.add_dropped_files)
         self.sample_list.customContextMenuRequested.connect(self.show_sample_context_menu)
         self.sample_list.horizontalScrollBar().valueChanged.connect(self._position_header_controls)
         self.sample_list.setStyleSheet(
@@ -377,7 +430,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         splitter.addWidget(side_panel)
-        splitter.addWidget(plot_stack)
+        splitter.addWidget(self.plot_splitter)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 3)
         splitter.setSizes([300, 900])
@@ -524,6 +577,23 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._add_pressure_region(raw_region, pressure)
         self.update_metrics()
+
+    def add_dropped_files(self, file_paths: list[str]) -> None:
+        if not file_paths:
+            self.statusBar().showMessage("No SMP files were dropped.", 4000)
+            return
+        try:
+            before_count = len(self.results)
+            self.append_files(file_paths)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Drag-and-drop import failed", str(exc))
+            return
+
+        added_count = len(self.results) - before_count
+        if added_count > 0:
+            self.statusBar().showMessage(f"Imported {added_count} SMP file(s) by drag-and-drop.", 5000)
+        else:
+            self.statusBar().showMessage("Dropped SMP files are already in the list.", 5000)
 
     def _redraw_plots(self) -> None:
         self.distribution_curve_data = plot_distribution_multi(
