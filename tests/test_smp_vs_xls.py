@@ -111,14 +111,14 @@ def test_export_selected_results_to_one_xlsx(tmp_path: Path) -> None:
     from openpyxl import load_workbook
 
     workbook = load_workbook(output_path, read_only=True, data_only=True)
-    assert workbook.sheetnames == ["Summary", "M5G2", "1-6"]
-    summary = workbook["Summary"]
-    assert summary["A5"].value == "File"
+    assert workbook.sheetnames == ["汇总", "M5G2", "1-6"]
+    summary = workbook["汇总"]
+    assert summary["A5"].value == "文件"
     assert summary["A6"].value == "M5G2"
     sample_sheet = workbook["M5G2"]
-    table_row = next(row for row in range(1, 60) if sample_sheet.cell(row, 1).value == "Point")
+    table_row = next(row for row in range(1, 60) if sample_sheet.cell(row, 1).value == "点号")
     headers = [sample_sheet.cell(table_row, column).value for column in range(1, 10)]
-    assert "dV/dlogD (smoothed, intrusion only)" in headers
+    assert "dV/dlogD（平滑，仅入汞）" in headers
     assert all("raw" not in str(header).lower() for header in headers)
     workbook.close()
 

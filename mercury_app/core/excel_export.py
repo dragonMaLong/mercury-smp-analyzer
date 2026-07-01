@@ -9,16 +9,16 @@ from .models import MercuryResult
 
 
 def export_results_xlsx(results: Sequence[MercuryResult], output_path: str | Path) -> Path:
-    """Export selected calculated results to a single Excel workbook."""
+    """将选中的计算结果导出到一个 Excel 工作簿。"""
     if not results:
-        raise ValueError("No selected SMP results to export.")
+        raise ValueError("没有选中的 SMP 结果可导出。")
 
     try:
         from openpyxl import Workbook
         from openpyxl.styles import Alignment, Font, PatternFill
         from openpyxl.utils import get_column_letter
     except ImportError as exc:
-        raise RuntimeError("openpyxl is required for XLS export. Run: python -m pip install -r requirements.txt") from exc
+        raise RuntimeError("导出 XLS 需要 openpyxl。请运行：python -m pip install -r requirements.txt") from exc
 
     output = Path(output_path)
     if output.suffix.lower() != ".xlsx":
@@ -26,7 +26,7 @@ def export_results_xlsx(results: Sequence[MercuryResult], output_path: str | Pat
 
     workbook = Workbook()
     summary = workbook.active
-    summary.title = "Summary"
+    summary.title = "汇总"
 
     header_fill = PatternFill("solid", fgColor="E0ECFF")
     title_font = Font(bold=True, size=12, color="111827")
@@ -35,7 +35,7 @@ def export_results_xlsx(results: Sequence[MercuryResult], output_path: str | Pat
 
     _write_summary_sheet(summary, results, header_fill, header_font, title_font, center_alignment)
 
-    used_names = {"Summary"}
+    used_names = {"汇总"}
     for result in results:
         sheet = workbook.create_sheet(_safe_sheet_name(result.metadata.get("file_name") or result.sample_name, used_names))
         _write_result_sheet(sheet, result, header_fill, header_font, title_font, center_alignment)
@@ -49,36 +49,36 @@ def export_results_xlsx(results: Sequence[MercuryResult], output_path: str | Pat
 
 
 def _write_summary_sheet(sheet, results, header_fill, header_font, title_font, center_alignment) -> None:
-    sheet["A1"] = "Mercury Intrusion Export"
+    sheet["A1"] = "压汞数据导出"
     sheet["A1"].font = title_font
-    sheet["A3"] = "Note"
-    sheet["B3"] = "Only selected visible samples are exported. dV/dlogD uses the smoothed intrusion distribution."
+    sheet["A3"] = "说明"
+    sheet["B3"] = "仅导出蓝色圆点选中的样品。dV/dlogD 使用平滑后的入汞孔径分布。"
 
     headers = [
-        "File",
-        "Sample name",
-        "Operator",
-        "Submitter",
-        "Created",
-        "Modified",
-        "Instrument",
-        "Software",
-        "Advancing angle (deg)",
-        "Surface tension (dynes/cm)",
-        "Mercury temperature (C)",
-        "Mercury density (g/mL)",
-        "Total intrusion volume (mL/g)",
-        "Total pore area (m2/g)",
-        "Median pore diameter, volume (nm)",
-        "Median pore pressure, volume (psia)",
-        "Median pore diameter, area (nm)",
-        "Median pore pressure, area (psia)",
-        "Average pore diameter 4V/A (nm)",
-        "Bulk density at 0.50 psia (g/mL)",
-        "Apparent skeletal density (g/mL)",
-        "Porosity (%)",
-        "Max pressure (psia)",
-        "Data points",
+        "文件",
+        "样品名称",
+        "测试人员",
+        "提交者",
+        "创建时间",
+        "修改时间",
+        "测试仪器",
+        "测试软件",
+        "进汞接触角 (deg)",
+        "表面张力 (dynes/cm)",
+        "汞温度 (C)",
+        "汞密度 (g/mL)",
+        "总入汞体积 (mL/g)",
+        "总孔面积 (m2/g)",
+        "中值孔径（体积）(nm)",
+        "中值压力（体积）(psia)",
+        "中值孔径（面积）(nm)",
+        "中值压力（面积）(psia)",
+        "平均孔径 4V/A (nm)",
+        "0.50 psia 体积密度 (g/mL)",
+        "表观骨架密度 (g/mL)",
+        "孔隙率 (%)",
+        "最大压力 (psia)",
+        "数据点数",
     ]
     start_row = 5
     for col, header in enumerate(headers, start=1):
@@ -124,28 +124,28 @@ def _write_result_sheet(sheet, result: MercuryResult, header_fill, header_font, 
     summary_metrics_result = summary_metrics(result)
 
     metadata_rows = [
-        ("Sample name", _text(result.metadata.get("sample_name"))),
-        ("Operator", _text(result.metadata.get("operator"))),
-        ("Submitter", _text(result.metadata.get("submitter"))),
-        ("Created", _text(result.metadata.get("created"))),
-        ("Modified", _text(result.metadata.get("modified"))),
-        ("Instrument", _text(result.metadata.get("instrument_name"))),
-        ("Software", _software_text(result)),
-        ("Advancing angle (deg)", _number(result.metadata.get("adv_contact_angle_deg"))),
-        ("Surface tension (dynes/cm)", _number(result.metadata.get("surface_tension_dynes_cm"))),
-        ("Mercury temperature (C)", _number(result.metadata.get("mercury_temperature_C"))),
-        ("Mercury density (g/mL)", _number(result.metadata.get("mercury_density_gmL"))),
-        ("Total intrusion volume (mL/g)", summary_metrics_result.total_intrusion_volume),
-        ("Total pore area (m2/g)", summary_metrics_result.total_pore_area),
-        ("Median pore diameter, volume (nm)", summary_metrics_result.median_volume_diameter),
-        ("Median pore pressure, volume (psia)", summary_metrics_result.median_volume_pressure),
-        ("Median pore diameter, area (nm)", summary_metrics_result.median_area_diameter),
-        ("Median pore pressure, area (psia)", summary_metrics_result.median_area_pressure),
-        ("Average pore diameter 4V/A (nm)", summary_metrics_result.average_pore_diameter),
-        ("Bulk density at 0.50 psia (g/mL)", summary_metrics_result.bulk_density),
-        ("Apparent skeletal density (g/mL)", summary_metrics_result.apparent_density),
-        ("Porosity (%)", summary_metrics_result.porosity),
-        ("Max pressure (psia)", result.max_pressure),
+        ("样品名称", _text(result.metadata.get("sample_name"))),
+        ("测试人员", _text(result.metadata.get("operator"))),
+        ("提交者", _text(result.metadata.get("submitter"))),
+        ("创建时间", _text(result.metadata.get("created"))),
+        ("修改时间", _text(result.metadata.get("modified"))),
+        ("测试仪器", _text(result.metadata.get("instrument_name"))),
+        ("测试软件", _software_text(result)),
+        ("进汞接触角 (deg)", _number(result.metadata.get("adv_contact_angle_deg"))),
+        ("表面张力 (dynes/cm)", _number(result.metadata.get("surface_tension_dynes_cm"))),
+        ("汞温度 (C)", _number(result.metadata.get("mercury_temperature_C"))),
+        ("汞密度 (g/mL)", _number(result.metadata.get("mercury_density_gmL"))),
+        ("总入汞体积 (mL/g)", summary_metrics_result.total_intrusion_volume),
+        ("总孔面积 (m2/g)", summary_metrics_result.total_pore_area),
+        ("中值孔径（体积）(nm)", summary_metrics_result.median_volume_diameter),
+        ("中值压力（体积）(psia)", summary_metrics_result.median_volume_pressure),
+        ("中值孔径（面积）(nm)", summary_metrics_result.median_area_diameter),
+        ("中值压力（面积）(psia)", summary_metrics_result.median_area_pressure),
+        ("平均孔径 4V/A (nm)", summary_metrics_result.average_pore_diameter),
+        ("0.50 psia 体积密度 (g/mL)", summary_metrics_result.bulk_density),
+        ("表观骨架密度 (g/mL)", summary_metrics_result.apparent_density),
+        ("孔隙率 (%)", summary_metrics_result.porosity),
+        ("最大压力 (psia)", result.max_pressure),
     ]
     for row, (name, value) in enumerate(metadata_rows, start=3):
         sheet.cell(row, 1, name).font = header_font
@@ -153,15 +153,15 @@ def _write_result_sheet(sheet, result: MercuryResult, header_fill, header_font, 
 
     table_row = len(metadata_rows) + 5
     headers = [
-        "Point",
-        "Cycle",
-        "Pressure (psia)",
-        "Pore diameter (nm)",
-        "Cumulative pore volume (mL/g)",
-        "Incremental pore volume (mL/g)",
-        "dV/dlogD (smoothed, intrusion only)",
-        "% Total intrusion volume",
-        "% Incremental intrusion volume",
+        "点号",
+        "过程",
+        "压力 (psia)",
+        "孔径 (nm)",
+        "累计孔体积 (mL/g)",
+        "增量孔体积 (mL/g)",
+        "dV/dlogD（平滑，仅入汞）",
+        "总入汞体积占比 (%)",
+        "增量入汞体积占比 (%)",
     ]
     for col, header in enumerate(headers, start=1):
         cell = sheet.cell(table_row, col, header)
@@ -172,7 +172,7 @@ def _write_result_sheet(sheet, result: MercuryResult, header_fill, header_font, 
     for row_index, row_data in enumerate(result.table, start=table_row + 1):
         is_extrusion = row_data["is_extrusion"] >= 0.5
         sheet.cell(row_index, 1, row_index - table_row)
-        sheet.cell(row_index, 2, "Extrusion" if is_extrusion else "Intrusion")
+        sheet.cell(row_index, 2, "退汞" if is_extrusion else "入汞")
         sheet.cell(row_index, 3, row_data["pressure"])
         sheet.cell(row_index, 4, row_data["diameter"])
         sheet.cell(row_index, 5, row_data["cum_volume"])
@@ -187,8 +187,8 @@ def _write_result_sheet(sheet, result: MercuryResult, header_fill, header_font, 
 
 
 def _safe_sheet_name(value, used_names: set[str]) -> str:
-    base = _text(value) or "Sample"
-    base = re.sub(r"[\[\]:*?/\\]", "_", base).strip("'") or "Sample"
+    base = _text(value) or "样品"
+    base = re.sub(r"[\[\]:*?/\\]", "_", base).strip("'") or "样品"
     base = base[:31]
     name = base
     counter = 2
@@ -212,7 +212,7 @@ def _autofit_columns(sheet, get_column_letter) -> None:
 
 def _text(value) -> str:
     text = str(value or "").strip()
-    return text if text else "NA"
+    return text if text else "未记录"
 
 
 def _software_text(result: MercuryResult) -> str:

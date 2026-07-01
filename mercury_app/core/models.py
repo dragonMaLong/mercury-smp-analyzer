@@ -135,13 +135,13 @@ class SegmentMetrics:
 
     def as_display_rows(self) -> list[tuple[str, str]]:
         return [
-            ("Pressure range", _fmt_range(self.pressure_min, self.pressure_max, "psia")),
-            ("Diameter range", _fmt_range(self.diameter_min, self.diameter_max, "nm")),
-            ("Pore volume", _fmt(self.pore_volume, "mL/g")),
-            ("Volume share", _fmt(self.pore_volume_percent, "%")),
-            ("Peak diameter", _fmt(self.peak_diameter, "nm")),
-            ("Peak dV/dlogD", _fmt(self.peak_value, "mL/g")),
-            ("Points", str(self.point_count)),
+            ("压力范围", _fmt_range(self.pressure_min, self.pressure_max, "psia")),
+            ("孔径范围", _fmt_range(self.diameter_min, self.diameter_max, "nm")),
+            ("孔容", _fmt(self.pore_volume, "mL/g")),
+            ("孔容占比", _fmt(self.pore_volume_percent, "%")),
+            ("峰值孔径", _fmt(self.peak_diameter, "nm")),
+            ("峰值 dV/dlogD", _fmt(self.peak_value, "mL/g")),
+            ("数据点数", str(self.point_count)),
         ]
 
 

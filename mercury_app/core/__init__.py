@@ -1,4 +1,4 @@
-"""Core APIs for SMP parsing, MicroActive-like calculations, and metrics."""
+"""SMP 解析、类 MicroActive 计算和统计参数的核心 API。"""
 
 from .excel_export import export_results_xlsx
 from .microactive_calc import calculate_microactive, export_microactive_csv, load_smp

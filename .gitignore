@@ -4,6 +4,9 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .vscode/
+.agents/
+build/
+dist/
 
 .venv/
 venv/
@@ -23,11 +26,3 @@ env/
 *.log
 *.tmp
 ~$*
-
-build/
-dist/
-*.spec
-
-assets/*.png
-assets/mercury-smp-app.ico
-!assets/mercury-smp-app-flat-wetting.ico

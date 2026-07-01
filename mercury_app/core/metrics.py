@@ -11,7 +11,7 @@ def metrics_for_pressure_range(
     pressure_max: float,
     intrusion_only: bool = True,
 ) -> SegmentMetrics:
-    """Return pore metrics for a selected pressure range."""
+    """返回所选压力范围内的孔结构统计参数。"""
     lo, hi = sorted((float(pressure_min), float(pressure_max)))
     mask = np.isfinite(result.pressure) & (result.pressure >= lo) & (result.pressure <= hi)
     if intrusion_only:
@@ -63,7 +63,7 @@ def metrics_for_pressure_range(
 
 
 def summary_metrics(result: MercuryResult, bulk_density_pressure: float = 0.5) -> PoreSummary:
-    """Return MicroActive-like whole-sample summary metrics."""
+    """返回类 MicroActive 的整样品汇总参数。"""
     total_volume = result.total_pore_volume
     total_pressure = result.max_pressure
     total_area = _total_pore_area(result)

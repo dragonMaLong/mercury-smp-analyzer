@@ -20,7 +20,7 @@ SMOOTH_DERIVATIVE_POLYORDER = 2
 
 
 def load_smp(filepath: str | Path) -> MercuryResult:
-    """Parse an SMP file and return the calculated MVP result."""
+    """解析 SMP 文件并返回计算结果。"""
     smp = parse_smp(filepath)
     return calculate_microactive(smp)
 
@@ -31,7 +31,7 @@ def calculate_microactive(
     adv_contact_angle_deg: float | None = None,
     surface_tension_dynes_cm: float | None = None,
 ) -> MercuryResult:
-    """Calculate MicroActive-like pore data from a parsed SMP file."""
+    """根据已解析的 SMP 文件计算类 MicroActive 孔结构数据。"""
     theta = smp.adv_contact_angle_deg if adv_contact_angle_deg is None else float(adv_contact_angle_deg)
     gamma = smp.surface_tension_dynes_cm if surface_tension_dynes_cm is None else float(surface_tension_dynes_cm)
     rows = _build_rows(smp, theta, gamma)
@@ -49,21 +49,21 @@ def calculate_microactive(
 
 
 def export_microactive_csv(result: MercuryResult, output_csv: str | Path) -> None:
-    """Write the calculated table using MicroActive-like column names."""
+    """导出计算数据表。"""
     with open(output_csv, "w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.writer(handle)
         writer.writerow(
             [
-                "Pressure (psia)",
-                "Pore Diameter (nm)",
-                "Cumulative Pore Volume (mL/g)",
-                "Incremental Pore Volume (mL/g)",
-                "Differential Intrusion Raw (/nm*mL/g)",
-                "Differential Intrusion (/nm*mL/g)",
-                "Log Differential Intrusion Raw (mL/g)",
-                "Log Differential Intrusion (mL/g)",
-                "% of Total Intrusion Volume",
-                "% Incremental Intrusion Volume",
+                "压力 (psia)",
+                "孔径 (nm)",
+                "累计孔体积 (mL/g)",
+                "增量孔体积 (mL/g)",
+                "原始微分入汞 (/nm*mL/g)",
+                "平滑微分入汞 (/nm*mL/g)",
+                "原始对数微分入汞 (mL/g)",
+                "平滑对数微分入汞 (mL/g)",
+                "总入汞体积占比 (%)",
+                "增量入汞体积占比 (%)",
             ]
         )
         for row in result.table:
@@ -183,7 +183,7 @@ def _max_pressure_raw_index(points, hp_start, lp_max_pressure, k_uL_per_pF, stem
         valid.append((i, pressure))
 
     if not valid:
-        raise ValueError("No valid pressure points found.")
+        raise ValueError("没有找到有效压力点。")
 
     return max(valid, key=lambda item: item[1])[0]
 
@@ -196,9 +196,9 @@ def _build_rows(smp: SMPFile, theta: float, gamma: float) -> list[dict[str, floa
     points = smp.raw_points
 
     if k == 0:
-        raise ValueError("Penetrometer constant is zero.")
+        raise ValueError("膨胀计常数为 0。")
     if mass == 0:
-        raise ValueError("Sample mass is zero.")
+        raise ValueError("样品质量为 0。")
 
     hp_start = _find_hp_start(points)
     lp_max_pressure = points[hp_start - 1].pressure_psia if hp_start else 0.0
@@ -240,7 +240,7 @@ def _build_rows(smp: SMPFile, theta: float, gamma: float) -> list[dict[str, floa
         previous_capacitance = point.capacitance_pF
 
     if not rows:
-        raise ValueError("No rows generated from SMP data.")
+        raise ValueError("未能从 SMP 数据生成计算表。")
 
     return rows
 
