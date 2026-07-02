@@ -271,7 +271,7 @@ def _fetch_json(url: str, *, timeout: float, api: bool) -> dict[str, Any]:
     request = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+            payload = json.loads(response.read().decode("utf-8-sig"))
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             raise UpdateCheckError("没有找到更新信息。") from exc
