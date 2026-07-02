@@ -24,6 +24,7 @@ from mercury_app.ui.plots import (
     make_plot,
     plot_distribution_multi,
     plot_pressure_volume_multi,
+    set_sample_curve_selected_plots,
     set_sample_curve_hover_plots,
 )
 from mercury_app.version import __version__
@@ -144,6 +145,7 @@ class SampleTableWidget(QtWidgets.QTableWidget):
     rowMoveRequested = Signal(int, int)
     smpFilesDropped = Signal(list)
     LONG_PRESS_MS = 220
+    FROZEN_COLUMN_COUNT = 2
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -151,6 +153,7 @@ class SampleTableWidget(QtWidgets.QTableWidget):
         self.viewport().setMouseTracking(True)
         self.setAcceptDrops(True)
         self.viewport().setAcceptDrops(True)
+        self._syncing_frozen_columns = False
         self._hovered_row = -1
         self._drag_source_row = -1
         self._drag_start_pos = QtCore.QPoint()
@@ -160,48 +163,220 @@ class SampleTableWidget(QtWidgets.QTableWidget):
         self._drop_indicator.setFixedHeight(2)
         self._drop_indicator.setStyleSheet("background: #2563eb;")
         self._drop_indicator.hide()
+        self._init_frozen_columns()
+
+    def frozen_header(self):
+        return self._frozen_table.horizontalHeader()
+
+    def _init_frozen_columns(self) -> None:
+        self._frozen_table = QtWidgets.QTableView(self)
+        self._frozen_table.setModel(self.model())
+        self._frozen_table.setSelectionModel(self.selectionModel())
+        self._frozen_table.setAcceptDrops(True)
+        self._frozen_table.viewport().setAcceptDrops(True)
+        self._frozen_table.setFocusPolicy(QtCore.Qt.NoFocus)
+        self._frozen_table.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self._frozen_table.setShowGrid(False)
+        self._frozen_table.setAlternatingRowColors(False)
+        self._frozen_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self._frozen_table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self._frozen_table.setEditTriggers(
+            QtWidgets.QAbstractItemView.DoubleClicked
+            | QtWidgets.QAbstractItemView.EditKeyPressed
+            | QtWidgets.QAbstractItemView.AnyKeyPressed
+        )
+        self._frozen_table.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
+        self._frozen_table.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self._frozen_table.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self._frozen_table.setMouseTracking(True)
+        self._frozen_table.viewport().setMouseTracking(True)
+        self._frozen_table.setStyleSheet(
+            """
+            QTableView {
+                border: 0;
+                background: #ffffff;
+                alternate-background-color: #ffffff;
+            }
+            QTableView::item:selected {
+                background: #e0ecff;
+                color: #111827;
+            }
+            QTableView::item:focus {
+                outline: none;
+            }
+            QTableView::indicator {
+                width: 11px;
+                height: 11px;
+                border-radius: 6px;
+                border: 1px solid #6b7280;
+                background: white;
+            }
+            QTableView::indicator:checked {
+                border: 1px solid #2563eb;
+                background: #2563eb;
+            }
+            QHeaderView::section {
+                background: #f9fafb;
+                border: 0;
+                border-right: 1px solid #d1d5db;
+                border-bottom: 1px solid #d1d5db;
+                color: #374151;
+                font-weight: 600;
+                padding: 4px 8px 4px 6px;
+            }
+            """
+        )
+        self._frozen_table.verticalHeader().hide()
+        self._frozen_table.verticalHeader().setDefaultSectionSize(self.verticalHeader().defaultSectionSize())
+        frozen_header = self._frozen_table.horizontalHeader()
+        frozen_header.setSectionsMovable(False)
+        frozen_header.setHighlightSections(False)
+        frozen_header.setDefaultAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        frozen_header.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
+        self.viewport().installEventFilter(self)
+        self._frozen_table.viewport().installEventFilter(self)
+
+        for column in range(self.model().columnCount()):
+            self._frozen_table.setColumnHidden(column, column >= self.FROZEN_COLUMN_COUNT)
+
+        self.horizontalHeader().sectionResized.connect(self._on_main_section_resized)
+        frozen_header.sectionResized.connect(self._on_frozen_section_resized)
+        self.verticalHeader().sectionResized.connect(self._on_main_row_resized)
+        self.verticalScrollBar().valueChanged.connect(self._frozen_table.verticalScrollBar().setValue)
+        self._frozen_table.verticalScrollBar().valueChanged.connect(self.verticalScrollBar().setValue)
+        self._frozen_table.show()
+        self.sync_frozen_row_heights()
+        self._update_frozen_geometry()
+
+    def setRowCount(self, rows: int) -> None:
+        super().setRowCount(rows)
+        self.sync_frozen_row_heights()
+
+    def sync_frozen_row_heights(self) -> None:
+        if not hasattr(self, "_frozen_table"):
+            return
+        self._frozen_table.verticalHeader().setDefaultSectionSize(self.verticalHeader().defaultSectionSize())
+        for row in range(self.rowCount()):
+            self._frozen_table.setRowHeight(row, self.rowHeight(row))
+
+    def eventFilter(self, obj, event) -> bool:
+        frozen_table = getattr(self, "_frozen_table", None)
+        if obj is self.viewport():
+            if event.type() == QtCore.QEvent.MouseMove:
+                self._set_hovered_row(self.rowAt(event.pos().y()))
+            elif event.type() in (QtCore.QEvent.Leave, QtCore.QEvent.Hide):
+                self._set_hovered_row(-1)
+            return super().eventFilter(obj, event)
+
+        if frozen_table is not None and obj is frozen_table.viewport():
+            if event.type() == QtCore.QEvent.MouseMove:
+                self._set_hovered_row(self._frozen_table.rowAt(event.pos().y()))
+            if event.type() in (QtCore.QEvent.DragEnter, QtCore.QEvent.DragMove):
+                if self._accept_file_drag_event(event):
+                    return True
+            if event.type() == QtCore.QEvent.Drop:
+                if self._accept_file_drop_event(event):
+                    return True
+            if event.type() == QtCore.QEvent.ContextMenu:
+                self.customContextMenuRequested.emit(QtCore.QPoint(0, event.pos().y()))
+                return True
+            if event.type() == QtCore.QEvent.MouseButtonPress and event.button() == QtCore.Qt.LeftButton:
+                self._begin_row_drag(self._frozen_to_main_viewport_pos(event.pos()))
+                return False
+            if event.type() == QtCore.QEvent.MouseMove:
+                if self._update_row_drag(self._frozen_to_main_viewport_pos(event.pos()), event.buttons()):
+                    return True
+            if event.type() == QtCore.QEvent.MouseButtonRelease:
+                if self._finish_row_drag(self._frozen_to_main_viewport_pos(event.pos()), event.button()):
+                    return True
+                if event.button() == QtCore.Qt.LeftButton:
+                    self._reset_row_drag()
+                return False
+            if event.type() in (QtCore.QEvent.Leave, QtCore.QEvent.Hide):
+                self._set_hovered_row(-1)
+        return super().eventFilter(obj, event)
+
+    def _frozen_to_main_viewport_pos(self, position: QtCore.QPoint) -> QtCore.QPoint:
+        return self.viewport().mapFromGlobal(self._frozen_table.viewport().mapToGlobal(position))
+
+    def scrollTo(self, index, hint=QtWidgets.QAbstractItemView.EnsureVisible) -> None:
+        if not index.isValid():
+            return
+        horizontal_value = self.horizontalScrollBar().value()
+        super().scrollTo(index, hint)
+        if index.column() < self.FROZEN_COLUMN_COUNT or self.selectionBehavior() == QtWidgets.QAbstractItemView.SelectRows:
+            self.horizontalScrollBar().setValue(horizontal_value)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_frozen_geometry()
+
+    def setColumnWidth(self, column: int, width: int) -> None:
+        super().setColumnWidth(column, width)
+        if hasattr(self, "_frozen_table") and column < self.FROZEN_COLUMN_COUNT:
+            self._frozen_table.setColumnWidth(column, width)
+            self._update_frozen_geometry()
+
+    def setRowHeight(self, row: int, height: int) -> None:
+        super().setRowHeight(row, height)
+        if hasattr(self, "_frozen_table"):
+            self._frozen_table.setRowHeight(row, height)
+
+    def _on_main_section_resized(self, logical_index: int, old_size: int, new_size: int) -> None:
+        if logical_index >= self.FROZEN_COLUMN_COUNT or self._syncing_frozen_columns:
+            self._update_frozen_geometry()
+            return
+        self._syncing_frozen_columns = True
+        try:
+            self._frozen_table.setColumnWidth(logical_index, new_size)
+        finally:
+            self._syncing_frozen_columns = False
+        self._update_frozen_geometry()
+
+    def _on_frozen_section_resized(self, logical_index: int, old_size: int, new_size: int) -> None:
+        if logical_index >= self.FROZEN_COLUMN_COUNT or self._syncing_frozen_columns:
+            return
+        self._syncing_frozen_columns = True
+        try:
+            super().setColumnWidth(logical_index, new_size)
+        finally:
+            self._syncing_frozen_columns = False
+        self._update_frozen_geometry()
+
+    def _on_main_row_resized(self, logical_index: int, old_size: int, new_size: int) -> None:
+        self._frozen_table.setRowHeight(logical_index, new_size)
+
+    def _frozen_width(self) -> int:
+        return sum(self.columnWidth(column) for column in range(self.FROZEN_COLUMN_COUNT))
+
+    def _update_frozen_geometry(self) -> None:
+        if not hasattr(self, "_frozen_table"):
+            return
+        width = self._frozen_width()
+        self._frozen_table.setGeometry(
+            self.frameWidth(),
+            self.frameWidth(),
+            width,
+            self.viewport().height() + self.horizontalHeader().height(),
+        )
+        self._frozen_table.raise_()
 
     def mousePressEvent(self, event) -> None:
         if event.button() == QtCore.Qt.LeftButton:
-            row = self.rowAt(event.pos().y())
-            if row >= 0:
-                self._drag_source_row = row
-                self._drag_start_pos = event.pos()
-                self._drag_timer.start()
-                self._dragging_row = False
-            else:
-                self._reset_row_drag()
+            self._begin_row_drag(event.pos())
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
         self._set_hovered_row(self.rowAt(event.pos().y()))
-        if not (event.buttons() & QtCore.Qt.LeftButton) or self._drag_source_row < 0:
+        if not self._update_row_drag(event.pos(), event.buttons()):
             super().mouseMoveEvent(event)
             return
-
-        distance = (event.pos() - self._drag_start_pos).manhattanLength()
-        if not self._dragging_row:
-            if self._drag_timer.elapsed() < self.LONG_PRESS_MS or distance < QtWidgets.QApplication.startDragDistance():
-                event.accept()
-                return
-            self._dragging_row = True
-            self.setCursor(QtCore.Qt.ClosedHandCursor)
-
-        insert_row = self._drop_insert_row(event.pos())
-        self._show_drop_indicator(insert_row)
-        self._auto_scroll(event.pos())
         event.accept()
 
     def mouseReleaseEvent(self, event) -> None:
-        if event.button() == QtCore.Qt.LeftButton and self._dragging_row:
-            source_row = self._drag_source_row
-            insert_row = self._drop_insert_row(event.pos())
-            self._reset_row_drag()
-            if source_row >= 0:
-                self.rowMoveRequested.emit(source_row, insert_row)
+        if self._finish_row_drag(event.pos(), event.button()):
             event.accept()
             return
-
         if event.button() == QtCore.Qt.LeftButton:
             self._reset_row_drag()
         super().mouseReleaseEvent(event)
@@ -223,9 +398,48 @@ class SampleTableWidget(QtWidgets.QTableWidget):
         self._hovered_row = row
         self.rowHovered.emit(row)
 
+    def _begin_row_drag(self, position: QtCore.QPoint) -> None:
+        row = self.rowAt(position.y())
+        if row >= 0:
+            self._drag_source_row = row
+            self._drag_start_pos = position
+            self._drag_timer.start()
+            self._dragging_row = False
+            return
+        self._reset_row_drag()
+
+    def _update_row_drag(self, position: QtCore.QPoint, buttons) -> bool:
+        if not (buttons & QtCore.Qt.LeftButton) or self._drag_source_row < 0:
+            return False
+        distance = (position - self._drag_start_pos).manhattanLength()
+        if not self._dragging_row:
+            if self._drag_timer.elapsed() < self.LONG_PRESS_MS or distance < QtWidgets.QApplication.startDragDistance():
+                return True
+            self._dragging_row = True
+            self.setCursor(QtCore.Qt.ClosedHandCursor)
+            if hasattr(self, "_frozen_table"):
+                self._frozen_table.setCursor(QtCore.Qt.ClosedHandCursor)
+
+        insert_row = self._drop_insert_row(position)
+        self._show_drop_indicator(insert_row)
+        self._auto_scroll(position)
+        return True
+
+    def _finish_row_drag(self, position: QtCore.QPoint, button) -> bool:
+        if button != QtCore.Qt.LeftButton or not self._dragging_row:
+            return False
+        source_row = self._drag_source_row
+        insert_row = self._drop_insert_row(position)
+        self._reset_row_drag()
+        if source_row >= 0:
+            self.rowMoveRequested.emit(source_row, insert_row)
+        return True
+
     def _reset_row_drag(self) -> None:
         if self._dragging_row:
             self.unsetCursor()
+            if hasattr(self, "_frozen_table"):
+                self._frozen_table.unsetCursor()
         self._drag_source_row = -1
         self._dragging_row = False
         self._drop_indicator.hide()
@@ -266,26 +480,34 @@ class SampleTableWidget(QtWidgets.QTableWidget):
             scroll_bar.setValue(scroll_bar.value() + step)
 
     def dragEnterEvent(self, event) -> None:
-        paths = self._smp_paths_from_mime_data(event.mimeData())
-        if paths:
-            event.acceptProposedAction()
+        if self._accept_file_drag_event(event):
             return
         super().dragEnterEvent(event)
 
     def dragMoveEvent(self, event) -> None:
-        paths = self._smp_paths_from_mime_data(event.mimeData())
-        if paths:
-            event.acceptProposedAction()
+        if self._accept_file_drag_event(event):
             return
         super().dragMoveEvent(event)
 
     def dropEvent(self, event) -> None:
+        if self._accept_file_drop_event(event):
+            return
+        super().dropEvent(event)
+
+    def _accept_file_drag_event(self, event) -> bool:
         paths = self._smp_paths_from_mime_data(event.mimeData())
         if paths:
             event.acceptProposedAction()
-            self.smpFilesDropped.emit(paths)
-            return
-        super().dropEvent(event)
+            return True
+        return False
+
+    def _accept_file_drop_event(self, event) -> bool:
+        paths = self._smp_paths_from_mime_data(event.mimeData())
+        if not paths:
+            return False
+        event.acceptProposedAction()
+        self.smpFilesDropped.emit(paths)
+        return True
 
     @staticmethod
     def _smp_paths_from_mime_data(mime_data) -> list[str]:
@@ -898,6 +1120,7 @@ class MainWindow(QtWidgets.QMainWindow):
         sample_header.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
         sample_header.sectionClicked.connect(self.on_sample_header_clicked)
         sample_header.sectionResized.connect(self._position_header_controls)
+        self.sample_list.frozen_header().sectionResized.connect(self._position_header_controls)
         self.sample_list.horizontalHeaderItem(TEST_TIME_COLUMN).setToolTip("点击按测试时间排序")
         self.sample_list.horizontalHeaderItem(ANGLE_COLUMN).setTextAlignment(QtCore.Qt.AlignCenter)
         self.sample_list.horizontalHeaderItem(TENSION_COLUMN).setTextAlignment(QtCore.Qt.AlignCenter)
@@ -916,6 +1139,7 @@ class MainWindow(QtWidgets.QMainWindow):
             | QtWidgets.QAbstractItemView.AnyKeyPressed
         )
         self.sample_list.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
+        self.sample_list.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
         self.sample_list.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
         self.sample_list.setMinimumHeight(60)
         self.sample_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
@@ -965,7 +1189,7 @@ class MainWindow(QtWidgets.QMainWindow):
             }
             """
         )
-        self.select_all_check.setParent(sample_header)
+        self.select_all_check.setParent(self.sample_list.frozen_header())
         self.select_all_check.show()
         self.angle_info_button = self._make_header_info_button(
             "进汞接触角",
@@ -1014,13 +1238,14 @@ class MainWindow(QtWidgets.QMainWindow):
             """
         )
         side_layout.addWidget(self.left_splitter, 1)
+        side_panel.setMinimumWidth(380)
 
         splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         splitter.addWidget(side_panel)
         splitter.addWidget(self.plot_splitter)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 3)
-        splitter.setSizes([300, 900])
+        splitter.setSizes([380, 900])
 
         self.setCentralWidget(splitter)
         self.statusBar().showMessage("导入或拖入 SMP 文件")
@@ -1502,6 +1727,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.sample_colors,
         )
         plot_pressure_volume_multi(self.pressure_plot, self.results, self.visible_results, self.sample_colors)
+        self._apply_active_sample_curve_selection()
 
     def _build_metric_tabs(self, active_index: int | None = None) -> None:
         self._build_metric_tabs_with_options(active_index=active_index, preserve_column_widths=False)
@@ -1512,6 +1738,9 @@ class MainWindow(QtWidgets.QMainWindow):
         preserve_column_widths: bool = False,
     ) -> None:
         column_widths = self._sample_column_widths() if preserve_column_widths else None
+        horizontal_scroll_value = (
+            self.sample_list.horizontalScrollBar().value() if preserve_column_widths else None
+        )
         self._hovered_sample_row = -1
         if hasattr(self.sample_list, "_hovered_row"):
             self.sample_list._hovered_row = -1
@@ -1541,6 +1770,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.results:
             index = 0 if active_index is None else max(0, min(active_index, len(self.results) - 1))
             self.on_active_tab_changed(index)
+        if horizontal_scroll_value is not None:
+            self._restore_sample_horizontal_scroll(horizontal_scroll_value)
 
     def _sample_column_widths(self) -> list[int]:
         return [self.sample_list.columnWidth(column) for column in range(self.sample_list.columnCount())]
@@ -1549,6 +1780,15 @@ class MainWindow(QtWidgets.QMainWindow):
         for column, width in enumerate(widths[: self.sample_list.columnCount()]):
             self.sample_list.setColumnWidth(column, width)
         self._position_header_controls()
+
+    def _restore_sample_horizontal_scroll(self, value: int) -> None:
+        scroll_bar = self.sample_list.horizontalScrollBar()
+
+        def restore() -> None:
+            scroll_bar.setValue(max(scroll_bar.minimum(), min(int(value), scroll_bar.maximum())))
+
+        restore()
+        QtCore.QTimer.singleShot(0, restore)
 
     def _resize_sample_columns_to_contents(self) -> None:
         self.sample_list.setColumnWidth(VISIBLE_COLUMN, 30)
@@ -1594,13 +1834,15 @@ class MainWindow(QtWidgets.QMainWindow):
         return button
 
     def _position_header_controls(self, *args) -> None:
-        header = self.sample_list.horizontalHeader()
-        if not header.isVisible():
+        frozen_header = self.sample_list.frozen_header() if hasattr(self.sample_list, "frozen_header") else self.sample_list.horizontalHeader()
+        if not frozen_header.isVisible():
             return
         size = self.select_all_check.sizeHint()
-        x = header.sectionViewportPosition(VISIBLE_COLUMN) + (header.sectionSize(VISIBLE_COLUMN) - size.width()) // 2
-        y = (header.height() - size.height()) // 2
-        self.select_all_check.setVisible(x + size.width() > 0 and x < header.width())
+        x = frozen_header.sectionViewportPosition(VISIBLE_COLUMN) + (
+            frozen_header.sectionSize(VISIBLE_COLUMN) - size.width()
+        ) // 2
+        y = (frozen_header.height() - size.height()) // 2
+        self.select_all_check.setVisible(x + size.width() > 0 and x < frozen_header.width())
         self.select_all_check.setGeometry(x, y, size.width(), size.height())
         if hasattr(self, "angle_info_button"):
             self._position_header_info_button(self.angle_info_button, ANGLE_COLUMN)
@@ -1822,6 +2064,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.sample_list.setCurrentCell(index, FILE_COLUMN)
                 self.sample_list.blockSignals(False)
             self.update_metrics()
+            self._apply_active_sample_curve_selection()
 
     def on_sample_header_clicked(self, section: int) -> None:
         if len(self.results) < 2:
@@ -1931,6 +2174,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _sample_hover_plots(self) -> tuple[object, ...]:
         return (self.distribution_plot, self.pressure_plot)
+
+    def _apply_active_sample_curve_selection(self) -> None:
+        sample_index = self.active_index if 0 <= self.active_index < len(self.results) else None
+        set_sample_curve_selected_plots(sample_index, *self._sample_hover_plots())
 
     def _on_sample_table_row_hovered(self, row: int) -> None:
         sample_index = int(row) if 0 <= int(row) < len(self.results) else None
@@ -3110,8 +3357,8 @@ def _app_icon() -> QtGui.QIcon:
 def run(argv: list[str] | None = None) -> int:
     _set_windows_app_id()
     app = QtWidgets.QApplication(argv or sys.argv)
-    app.setApplicationName(APP_NAME)
-    app.setApplicationDisplayName(APP_NAME)
+    app.setApplicationName("MercurySmpAnalyzerZh")
+    app.setApplicationDisplayName("")
     app.setFont(QtGui.QFont("Microsoft YaHei UI", 9))
     icon = _app_icon()
     if not icon.isNull():

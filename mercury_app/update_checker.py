@@ -26,6 +26,14 @@ PREFERRED_ASSET_KEYWORDS = ("zh-cn", "zh_cn", "zh", "cn", "中文", "压汞")
 
 
 @dataclass(frozen=True)
+class UpdatePart:
+    name: str
+    url: str
+    size: int = 0
+    sha256: str = ""
+
+
+@dataclass(frozen=True)
 class UpdateInfo:
     current_version: str
     latest_version: str
@@ -39,6 +47,7 @@ class UpdateInfo:
     source_name: str = ""
     source_url: str = ""
     sha256: str = ""
+    download_parts: tuple[UpdatePart, ...] = ()
 
 
 class UpdateCheckError(RuntimeError):
@@ -130,6 +139,7 @@ def _info_from_manifest(payload: dict[str, Any], current_version: str, source_ur
             legacy_keys=("download_url", "browser_download_url"),
         ),
     )
+    download_parts = _manifest_download_parts(payload, source_prefix)
     asset_name = str(payload.get("asset_name") or "").strip()
     if not asset_name and download_url:
         asset_name = download_url.rstrip("/").rsplit("/", 1)[-1]
@@ -152,6 +162,7 @@ def _info_from_manifest(payload: dict[str, Any], current_version: str, source_ur
         ).strip(),
         source_url=source_url,
         sha256=str(payload.get("sha256") or payload.get("checksum") or "").strip(),
+        download_parts=download_parts,
     )
 
 
@@ -167,6 +178,56 @@ def _first_manifest_value(payload: dict[str, Any], keys: Iterable[str]) -> str:
         if value:
             return value
     return ""
+
+
+def _manifest_download_parts(payload: dict[str, Any], source_prefix: str) -> tuple[UpdatePart, ...]:
+    keys = _manifest_keys(
+        source_prefix,
+        "download_parts",
+        legacy_keys=("download_parts", "asset_parts", "parts"),
+    )
+    for key in keys:
+        raw_parts = payload.get(key)
+        if not isinstance(raw_parts, list):
+            continue
+        parts = []
+        for index, raw_part in enumerate(raw_parts, start=1):
+            part = _manifest_download_part(raw_part, index)
+            if part is not None:
+                parts.append(part)
+        if parts:
+            return tuple(parts)
+    return ()
+
+
+def _manifest_download_part(raw_part: Any, index: int) -> UpdatePart | None:
+    if isinstance(raw_part, str):
+        url = raw_part.strip()
+        name = url.rstrip("/").rsplit("/", 1)[-1] or f"part{index:02d}"
+        return UpdatePart(name=name, url=url) if url else None
+    if not isinstance(raw_part, dict):
+        return None
+
+    url = _first_manifest_value(raw_part, ("url", "download_url", "browser_download_url"))
+    if not url:
+        return None
+    name = str(raw_part.get("name") or raw_part.get("asset_name") or "").strip()
+    if not name:
+        name = url.rstrip("/").rsplit("/", 1)[-1] or f"part{index:02d}"
+    return UpdatePart(
+        name=name,
+        url=url,
+        size=_int_manifest_value(raw_part.get("size") or raw_part.get("bytes")),
+        sha256=str(raw_part.get("sha256") or raw_part.get("checksum") or "").strip(),
+    )
+
+
+def _int_manifest_value(value: Any) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, number)
 
 
 def _info_from_github_release(payload: dict[str, Any], current_version: str, repository: str) -> UpdateInfo:

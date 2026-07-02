@@ -10,7 +10,7 @@ import urllib.request
 from pathlib import Path
 from typing import Callable
 
-from .update_checker import UpdateInfo
+from .update_checker import UpdateInfo, UpdatePart
 
 
 ProgressCallback = Callable[[int, int], None]
@@ -21,6 +21,12 @@ class UpdateDownloadError(RuntimeError):
 
 
 def download_update(info: UpdateInfo, *, progress_callback: ProgressCallback | None = None) -> Path:
+    if info.download_parts:
+        return _download_split_update(info, progress_callback=progress_callback)
+    return _download_single_update(info, progress_callback=progress_callback)
+
+
+def _download_single_update(info: UpdateInfo, *, progress_callback: ProgressCallback | None = None) -> Path:
     url = (info.download_url or "").strip()
     if not url:
         raise UpdateDownloadError("更新信息中没有可下载的安装包链接。")
@@ -87,6 +93,134 @@ def download_update(info: UpdateInfo, *, progress_callback: ProgressCallback | N
         target.unlink()
     partial.replace(target)
     return target
+
+
+def _download_split_update(info: UpdateInfo, *, progress_callback: ProgressCallback | None = None) -> Path:
+    parts = tuple(info.download_parts)
+    if not parts:
+        raise UpdateDownloadError("Update manifest does not contain downloadable installer parts.")
+
+    download_dir = _download_dir()
+    download_dir.mkdir(parents=True, exist_ok=True)
+    target = download_dir / _download_filename(info)
+    partial = target.with_name(target.name + ".assembling")
+    expected_sha256 = (info.sha256 or "").strip().lower()
+
+    if target.exists() and expected_sha256 and _sha256_file(target) == expected_sha256:
+        size = target.stat().st_size
+        if progress_callback is not None:
+            progress_callback(size, size)
+        return target
+
+    _remove_quietly(partial)
+    part_paths = [
+        download_dir / f"{target.name}.part{index:02d}"
+        for index in range(1, len(parts) + 1)
+    ]
+    for part_path in part_paths:
+        _remove_quietly(part_path)
+
+    total_size = sum(max(0, int(part.size)) for part in parts)
+    downloaded_before = 0
+    try:
+        for part, part_path in zip(parts, part_paths):
+            _download_update_part(
+                info,
+                part,
+                part_path,
+                downloaded_before=downloaded_before,
+                total_size=total_size,
+                progress_callback=progress_callback,
+            )
+            downloaded_before += part_path.stat().st_size
+
+        digest = hashlib.sha256()
+        with partial.open("wb") as output:
+            for part_path in part_paths:
+                with part_path.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        output.write(chunk)
+                        digest.update(chunk)
+
+        actual_sha256 = digest.hexdigest()
+        if expected_sha256 and actual_sha256 != expected_sha256:
+            raise UpdateDownloadError("Update installer checksum mismatch after merging split assets.")
+
+        if target.exists():
+            target.unlink()
+        partial.replace(target)
+        if progress_callback is not None:
+            size = target.stat().st_size
+            progress_callback(size, size)
+        return target
+    except (OSError, UpdateDownloadError) as exc:
+        _remove_quietly(partial)
+        if isinstance(exc, UpdateDownloadError):
+            raise
+        raise UpdateDownloadError(f"Failed to merge split update assets: {exc}") from exc
+    finally:
+        for part_path in part_paths:
+            _remove_quietly(part_path)
+
+
+def _download_update_part(
+    info: UpdateInfo,
+    part: UpdatePart,
+    target: Path,
+    *,
+    downloaded_before: int,
+    total_size: int,
+    progress_callback: ProgressCallback | None,
+) -> None:
+    url = (part.url or "").strip()
+    if not url:
+        raise UpdateDownloadError(f"Update part {part.name or target.name} has no download URL.")
+
+    partial = target.with_name(target.name + ".download")
+    _remove_quietly(partial)
+    expected_sha256 = (part.sha256 or "").strip().lower()
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/octet-stream, */*",
+            "User-Agent": f"Mercury-SMP-Updater/{info.current_version}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            response_total = int(response.headers.get("Content-Length") or 0)
+            effective_total = total_size if total_size > 0 else downloaded_before + response_total
+            digest = hashlib.sha256()
+            downloaded = 0
+            with partial.open("wb") as handle:
+                while True:
+                    chunk = response.read(1024 * 256)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+                    digest.update(chunk)
+                    downloaded += len(chunk)
+                    if progress_callback is not None:
+                        progress_callback(downloaded_before + downloaded, effective_total)
+    except urllib.error.HTTPError as exc:
+        _remove_quietly(partial)
+        raise UpdateDownloadError(f"Failed to download update part {part.name}: HTTP {exc.code}.") from exc
+    except urllib.error.URLError as exc:
+        _remove_quietly(partial)
+        reason = getattr(exc, "reason", exc)
+        raise UpdateDownloadError(f"Failed to download update part {part.name}: {reason}") from exc
+    except TimeoutError as exc:
+        _remove_quietly(partial)
+        raise UpdateDownloadError(f"Failed to download update part {part.name}: connection timed out.") from exc
+    except OSError as exc:
+        _remove_quietly(partial)
+        raise UpdateDownloadError(f"Failed to download update part {part.name}: {exc}") from exc
+
+    actual_sha256 = digest.hexdigest()
+    if expected_sha256 and actual_sha256 != expected_sha256:
+        _remove_quietly(partial)
+        raise UpdateDownloadError(f"Update part checksum mismatch: {part.name}.")
+    partial.replace(target)
 
 
 def launch_update_and_exit(downloaded_exe: Path) -> None:

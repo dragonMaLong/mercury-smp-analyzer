@@ -579,6 +579,7 @@ class SampleCurveInteractionController(QtCore.QObject):
         self.entries: list[dict[str, object]] = []
         self.hovered_entry: dict[str, object] | None = None
         self.hovered_sample_index: int | None = None
+        self.selected_sample_index: int | None = None
         self.pending_scene_pos: QtCore.QPointF | None = None
         self.hover_timer = QtCore.QTimer(self)
         self.hover_timer.setSingleShot(True)
@@ -634,6 +635,7 @@ class SampleCurveInteractionController(QtCore.QObject):
         self.pending_scene_pos = None
         self.hovered_entry = None
         self.hovered_sample_index = None
+        self.selected_sample_index = None
         self._hide_tooltip()
         _set_legend_sample_hover(self.plot, None)
 
@@ -850,18 +852,8 @@ class SampleCurveInteractionController(QtCore.QObject):
         self._restore_all()
         self.hovered_entry = entry
         self.hovered_sample_index = sample_index
-        for other in self.entries:
-            item = other.get("item")
-            if item is not None:
-                try:
-                    item.setOpacity(1.0 if int(other.get("sample_index", -1)) == sample_index else 0.22)
-                except Exception:
-                    pass
-        for highlighted in self.entries:
-            if int(highlighted.get("sample_index", -1)) == sample_index:
-                self._highlight_entry_item(highlighted)
+        self._apply_sample_highlight(sample_index, dim_others=True, glow=False)
         self._move_tooltip(entry, view_point)
-        _set_legend_sample_hover(self.plot, sample_index)
         self._propagate_hover(sample_index)
         self._notify_hover(sample_index)
 
@@ -897,18 +889,57 @@ class SampleCurveInteractionController(QtCore.QObject):
         self._restore_all()
         self.hovered_entry = entry
         self.hovered_sample_index = sample_index
+        self._apply_sample_highlight(sample_index, dim_others=True, glow=False)
+        self._hide_tooltip()
+
+    def set_selected_sample(self, sample_index: int | None) -> None:
+        normalized_index = self._normalize_sample_index(sample_index)
+        self.selected_sample_index = normalized_index
+        if self.hovered_sample_index is not None:
+            return
+        self._restore_all()
+        if normalized_index is None or not self._apply_sample_highlight(normalized_index, dim_others=False, glow=False):
+            _set_legend_sample_hover(self.plot, None)
+
+    @staticmethod
+    def _normalize_sample_index(sample_index: int | None) -> int | None:
+        if sample_index is None:
+            return None
+        try:
+            index = int(sample_index)
+        except (TypeError, ValueError):
+            return None
+        return index if index >= 0 else None
+
+    def _apply_sample_highlight(
+        self,
+        sample_index: int,
+        *,
+        dim_others: bool,
+        glow: bool,
+    ) -> bool:
+        highlighted_entries = [
+            entry
+            for entry in self.entries
+            if int(entry.get("sample_index", -1)) == sample_index
+        ]
+        if not highlighted_entries:
+            return False
         for other in self.entries:
             item = other.get("item")
-            if item is not None:
-                try:
+            if item is None:
+                continue
+            try:
+                if dim_others:
                     item.setOpacity(1.0 if int(other.get("sample_index", -1)) == sample_index else 0.22)
-                except Exception:
-                    pass
-        for highlighted in self.entries:
-            if int(highlighted.get("sample_index", -1)) == sample_index:
-                self._highlight_entry_item(highlighted)
-        self._hide_tooltip()
+                else:
+                    item.setOpacity(1.0)
+            except Exception:
+                pass
+        for highlighted in highlighted_entries:
+            self._highlight_entry_item(highlighted, glow=glow)
         _set_legend_sample_hover(self.plot, sample_index)
+        return True
 
     def clear_hover(self, *, propagate: bool = True) -> None:
         self.hover_timer.stop()
@@ -924,7 +955,12 @@ class SampleCurveInteractionController(QtCore.QObject):
         self.hovered_entry = None
         self.hovered_sample_index = None
         self._hide_tooltip()
-        _set_legend_sample_hover(self.plot, None)
+        if self.selected_sample_index is None or not self._apply_sample_highlight(
+            self.selected_sample_index,
+            dim_others=False,
+            glow=False,
+        ):
+            _set_legend_sample_hover(self.plot, None)
         if propagate:
             self._propagate_hover(None)
             self._notify_hover(None)
@@ -951,7 +987,7 @@ class SampleCurveInteractionController(QtCore.QObject):
             except Exception:
                 pass
 
-    def _highlight_entry_item(self, entry: dict[str, object]) -> None:
+    def _highlight_entry_item(self, entry: dict[str, object], *, glow: bool = False) -> None:
         item = entry.get("item")
         if item is None:
             return
@@ -960,11 +996,14 @@ class SampleCurveInteractionController(QtCore.QObject):
             highlight_pen = QtGui.QPen(base_pen)
             highlight_pen.setWidthF(max(float(base_pen.widthF()) + 2.5, 5.0))
             item.setPen(highlight_pen)
-            glow_pen = QtGui.QPen(base_pen)
-            glow_pen.setColor(QtGui.QColor("#fbbf24"))
-            glow_pen.setWidthF(max(float(base_pen.widthF()) + 8.0, 10.0))
             if hasattr(item, "setShadowPen"):
-                item.setShadowPen(glow_pen)
+                if glow:
+                    glow_pen = QtGui.QPen(base_pen)
+                    glow_pen.setColor(QtGui.QColor("#fbbf24"))
+                    glow_pen.setWidthF(max(float(base_pen.widthF()) + 8.0, 10.0))
+                    item.setShadowPen(glow_pen)
+                else:
+                    item.setShadowPen(None)
         base_symbol_size = entry.get("base_symbol_size")
         if base_symbol_size is not None:
             try:
@@ -1060,6 +1099,18 @@ def set_sample_curve_hover_plots(sample_index: int | None, *plots: pg.PlotWidget
             continue
         try:
             controller.set_linked_hover(sample_index)
+        except Exception:
+            pass
+
+
+def set_sample_curve_selected_plots(sample_index: int | None, *plots: pg.PlotWidget) -> None:
+    for plot in plots:
+        controller = getattr(plot, "_sample_curve_interaction_controller", None)
+        if controller is None:
+            _set_legend_sample_hover(plot, sample_index)
+            continue
+        try:
+            controller.set_selected_sample(sample_index)
         except Exception:
             pass
 
@@ -1275,6 +1326,14 @@ def plot_distribution_multi(
             label=label,
             x_values=data["curve_x"],
             y_values=data["curve_y"],
+        )
+        _register_sample_curve(
+            plot,
+            point_item,
+            sample_index=index,
+            label=label,
+            x_values=data["x"],
+            y_values=data["y"],
         )
         legend_entries.append((index, curve_item, label))
         if data["x"].size:

@@ -1,12 +1,39 @@
-{
-  "version": "v1.0.0",
-  "release_name": "MIP\u7efc\u5408\u5206\u6790-DragonScience v1.0.0",
-  "asset_name": "MIP-DragonScience-v1.0.0.exe",
-  "release_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/tag/v1.0.0",
-  "download_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/download/v1.0.0/MIP-DragonScience-v1.0.0.exe",
-  "github_release_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/tag/v1.0.0",
-  "github_download_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/download/v1.0.0/MIP-DragonScience-v1.0.0.exe",
-  "release_notes": "MIP comprehensive analysis v1.0.0: updated branding, transparent MIP logo, multi-sample import, linked plot/legend sample selection, selected pore-volume range tools, and software update support.",
-  "published_at": "2026-07-01",
-  "sha256": "4FBDC55EB9F6CE31AC694A114C3E57792AE0DFF9A830FE361D82BE3E218B31B1"
+﻿{
+    "version":  "v1.0.0",
+    "release_name":  "MIP综合分析-DragonScience v1.0.0",
+    "asset_name":  "MIP-DragonScience-v1.0.0.exe",
+    "release_url":  "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/tag/v1.0.0",
+    "download_url":  "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/download/v1.0.0/MIP-DragonScience-v1.0.0.exe",
+    "github_release_url":  "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/tag/v1.0.0",
+    "github_download_url":  "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/download/v1.0.0/MIP-DragonScience-v1.0.0.exe",
+    "gitee_release_url":  "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/tag/v1.0.0",
+    "gitee_download_parts":  [
+                                 {
+                                     "name":  "MIP-DragonScience-v1.0.0.exe.part01",
+                                     "url":  "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.0.0/MIP-DragonScience-v1.0.0.exe.part01",
+                                     "size":  85111526,
+                                     "sha256":  "B7BB4A11714A4D5FBF93DDACB647C0E704931F1EAB5597011733E7E8E3EC4019"
+                                 },
+                                 {
+                                     "name":  "MIP-DragonScience-v1.0.0.exe.part02",
+                                     "url":  "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.0.0/MIP-DragonScience-v1.0.0.exe.part02",
+                                     "size":  85111526,
+                                     "sha256":  "9BC473636C8F4C5C30CAE88CFE09E896372514B268C687AE97B1707A9B54E0BD"
+                                 },
+                                 {
+                                     "name":  "MIP-DragonScience-v1.0.0.exe.part03",
+                                     "url":  "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.0.0/MIP-DragonScience-v1.0.0.exe.part03",
+                                     "size":  85111526,
+                                     "sha256":  "E929E22959869EA52BC316A8D290655E94CEF7ECE72B2E0C533C8A8D8D6C2E6C"
+                                 },
+                                 {
+                                     "name":  "MIP-DragonScience-v1.0.0.exe.part04",
+                                     "url":  "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.0.0/MIP-DragonScience-v1.0.0.exe.part04",
+                                     "size":  85111526,
+                                     "sha256":  "5838F1F00A9E81C98DC9F35ADAD6912EB5A25E6E64008D7E977B013D43D584C9"
+                                 }
+                             ],
+    "release_notes":  "MIP comprehensive analysis v1.0.0: added Gitee split-update support, table-selected sample curve highlight with thicker lines/larger points, frozen filename columns, smoother sample table scrolling, corrected window title, and recent MIP plotting/import refinements.",
+    "published_at":  "2026-07-02",
+    "sha256":  "C6CF73FA811DFACAD38154DD635233001CFC799E55B3AAE7DFFAAACED277F409"
 }
