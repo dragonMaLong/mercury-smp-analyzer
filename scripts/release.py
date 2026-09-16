@@ -61,6 +61,31 @@ def gitee_token():
     return token
 
 
+def github_request(method, url, *, values=None, file_path=None):
+    """Use verified Windows TLS; pass credentials on stdin, never argv/disk."""
+    headers = github_headers()
+    arguments = ['curl.exe', '--noproxy', '*', '--silent', '--show-error',
+                 '--http1.1', '--connect-timeout', '30', '--max-time', '900',
+                 '--request', method, '--config', '-', '--write-out', '\n%{http_code}', url]
+    if method in ('GET', 'PATCH'):
+        arguments += ['--retry', '3', '--retry-all-errors', '--retry-delay', '2']
+    if values is not None:
+        headers['Content-Type'] = 'application/json'
+        arguments += ['--data-binary', json.dumps(values, ensure_ascii=True)]
+    if file_path is not None:
+        headers['Content-Type'] = 'application/octet-stream'
+        arguments += ['--data-binary', '@' + str(file_path)]
+    config = '\n'.join('header = ' + json.dumps(k + ': ' + v) for k, v in headers.items())
+    result = subprocess.run(arguments, input=config, text=True, encoding='utf-8', errors='replace',
+                            capture_output=True, timeout=930)
+    if result.returncode:
+        raise RuntimeError(f'GitHub transfer failed (curl exit {result.returncode})')
+    body, status = result.stdout.rsplit('\n', 1)
+    if not 200 <= int(status) < 300:
+        raise RuntimeError(f'GitHub API returned HTTP {status}')
+    return json.loads(body)
+
+
 def payload(response):
     if not response.ok:
         # Never expose URLs, query strings, headers, or tokens on failure.
@@ -111,7 +136,7 @@ def prepare():
 
 def find_release(platform):
     if platform == 'github':
-        releases = payload(requests.get(GH_API + '/releases', headers=github_headers(), timeout=30))
+        releases = github_request('GET', GH_API + '/releases')
     else:
         releases = payload(requests.get(GE_API + '/releases', params={'access_token': gitee_token()}, timeout=30))
     return next((r for r in releases if r['tag_name'] == TAG), None)
@@ -125,7 +150,7 @@ def upload(platform):
         values = {'tag_name': TAG, 'target_commitish': commit, 'name': manifest['release_name'], 'body': notes(), 'prerelease': False}
         if platform == 'github':
             values['draft'] = True
-            release = payload(requests.post(GH_API + '/releases', json=values, headers=github_headers(), timeout=30))
+            release = github_request('POST', GH_API + '/releases', values=values)
         else:
             release = payload(requests.post(GE_API + '/releases', json={**values, 'access_token': gitee_token()}, timeout=30))
     print(platform, 'release', release['id'], 'tag', TAG, flush=True)
@@ -138,8 +163,7 @@ def upload(platform):
             print('GitHub asset already verified', flush=True)
             return
         url = release['upload_url'].split('{')[0]
-        with path.open('rb') as file:
-            asset = payload(requests.post(url, params={'name': ASSET}, headers={**github_headers(), 'Content-Type': 'application/octet-stream'}, data=file, timeout=(30, 600)))
+        asset = github_request('POST', url + '?name=' + ASSET, file_path=path)
         assert asset['size'] == path.stat().st_size
         assert asset['digest'].lower() == 'sha256:' + sha(path).lower()
         print('GitHub upload verified', asset['size'], asset['digest'], flush=True)
@@ -152,7 +176,16 @@ def upload(platform):
             assert sha(path) == part['sha256']
             print('Uploading Gitee', path.name, path.stat().st_size, flush=True)
             with path.open('rb') as file:
-                payload(requests.post(GE_API + f"/releases/{release['id']}/attach_files", data={'access_token': gitee_token()}, files={'file': (path.name, file, 'application/octet-stream')}, timeout=(30, 600)))
+                from requests_toolbelt.multipart.encoder import MultipartEncoder
+                body = MultipartEncoder(fields={
+                    'access_token': gitee_token(),
+                    'file': (path.name, file, 'application/octet-stream'),
+                })
+                payload(requests.post(
+                    GE_API + f"/releases/{release['id']}/attach_files",
+                    data=body, headers={'Content-Type': body.content_type},
+                    timeout=(120, 600),
+                ))
             print('Gitee uploaded', path.name, flush=True)
 
 
@@ -162,7 +195,7 @@ def publish_github():
         raise RuntimeError('Upload first')
     expected = sha(DIRECTORY / ASSET).lower()
     assert any(a.get('name') == ASSET and a.get('digest', '').lower() == 'sha256:' + expected for a in release['assets'])
-    result = payload(requests.patch(GH_API + f"/releases/{release['id']}", json={'draft': False, 'make_latest': 'true'}, headers=github_headers(), timeout=30))
+    result = github_request('PATCH', GH_API + f"/releases/{release['id']}", values={'draft': False, 'make_latest': 'true'})
     print('Published', result['html_url'], flush=True)
 
 
