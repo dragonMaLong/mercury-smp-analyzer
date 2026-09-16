@@ -62,7 +62,7 @@ def metrics_for_pressure_range(
     )
 
 
-def summary_metrics(result: MercuryResult, bulk_density_pressure: float = 0.5) -> PoreSummary:
+def summary_metrics(result: MercuryResult, bulk_density_pressure: float | None = None) -> PoreSummary:
     """返回类 MicroActive 的整样品汇总参数。"""
     total_volume = result.total_pore_volume
     total_pressure = result.max_pressure
@@ -70,6 +70,9 @@ def summary_metrics(result: MercuryResult, bulk_density_pressure: float = 0.5) -
     median_volume_pressure, median_volume_diameter = _median_by_cumulative_volume(result, total_volume / 2.0)
     median_area_pressure, median_area_diameter = _median_by_cumulative_area(result, total_area / 2.0)
     average_diameter = 4000.0 * total_volume / total_area if total_area > 0 else float("nan")
+    if bulk_density_pressure is None:
+        indexes = _intrusion_indexes(result)
+        bulk_density_pressure = float(np.min(result.pressure[indexes])) if indexes.size else 0.5
     bulk_density = _bulk_density_at_pressure(result, bulk_density_pressure)
 
     apparent_density = float("nan")

@@ -9,7 +9,7 @@ smp_parser.py — Micromeritics AutoPore SMP 文件完整解析器
 关键规律（6个文件验证）：
   样品质量偏移 = SUBSET626 size - 5002
   组件质量偏移 = SUBSET626 size - 160
-  汞密度记录格式：density(8B) + flag(1B) + temperature(8B)，每条17字节
+  汞密度记录格式：flag(1B) + temperature(8B) + density(8B)，每条17字节
 """
 
 import struct, math, csv, os, datetime, re
@@ -261,7 +261,7 @@ class SMPParser:
           +908 : 压力程序表起点
 
         汞密度记录格式（17字节/条）：
-          [density double(8B)] [flag uint8(1B)] [temperature double(8B)]
+          [flag uint8(1B)] [temperature double(8B)] [density double(8B)]
         """
         o, size = block
 
@@ -275,7 +275,8 @@ class SMPParser:
             if lo < v < hi:
                 setattr(smp, attr, v)
 
-        # Mercury density table: 17 byte records, with a shifting start offset.
+        # Records are flag + temperature + density (17 bytes). Pairing a
+        # density with the following temperature shifts the entire table.
         density_map = {}
         payload = data[o:o+size]
         best_run = []
@@ -283,9 +284,8 @@ class SMPParser:
             run = []
             i = start
             while i + 17 <= len(payload):
-                d = struct.unpack_from("<d", payload, i)[0]
-                flag = payload[i + 8]
-                temp = struct.unpack_from("<d", payload, i + 9)[0]
+                flag = payload[i]
+                temp, d = struct.unpack_from("<dd", payload, i + 1)
                 if flag == 171:
                     break
                 if not (flag == 1 and 13.0 < d < 14.0 and 0.0 < temp < 100.0):
@@ -487,6 +487,15 @@ def _parse_mercury_temperature(data, blocks, smp):
     subset630 = blocks.get(0x0276)
     if not subset630:
         return
+
+    # Measured temperature is the double in the trailer after SUBSET630.
+    # Unlike the old FREE-space scan this also handles compacted SMP files.
+    temperature_offset = subset630[0] + subset630[1] + 10
+    if temperature_offset + 8 <= len(data):
+        value = struct.unpack_from("<d", data, temperature_offset)[0]
+        if math.isfinite(value) and 0.0 < value < 100.0:
+            smp.mercury_temperature_C = float(value)
+            return
 
     gap_start = 0
     if 0x02C1 in blocks:

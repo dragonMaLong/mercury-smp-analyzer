@@ -1279,6 +1279,101 @@ def plot_pressure_volume_multi(
         plot.setYRange(float(np.nanmin(y_values)), float(np.nanmax(y_values)), padding=0.08)
 
 
+def plot_cumulative_percent_multi(
+    plot: pg.PlotWidget,
+    analyses,
+    visible: list[bool],
+    colors: list[str],
+    selected_index: int | None = None,
+) -> None:
+    """Draw selected first-intrusion volume normalized from zero to 100 percent."""
+    plot.clear()
+    _reset_sample_curve_interactions(plot)
+    plot.setLogMode(x=True, y=False)
+    all_x = []
+    entries = []
+    for index, analysis in enumerate(analyses):
+        if index >= len(visible) or not visible[index] or not analysis.is_valid:
+            continue
+        x_values = np.asarray(analysis.pressure, dtype=float)
+        y_values = np.asarray(analysis.cumulative_percent, dtype=float)
+        finite = np.isfinite(x_values) & (x_values > 0) & np.isfinite(y_values)
+        if not np.any(finite):
+            continue
+        x_values = x_values[finite]
+        y_values = y_values[finite]
+        color = colors[index % len(colors)]
+        label = str(getattr(analysis, "sample_name", "") or f"样品 {index + 1}")
+        curve_x, curve_y = smooth_log_distribution_curve(x_values, y_values)
+        curve_y = np.clip(curve_y, 0.0, 100.0)
+        item = plot.plot(
+            curve_x,
+            curve_y,
+            pen=pg.mkPen(color, width=2),
+            name=label,
+        )
+        points = plot.plot(
+            x_values,
+            y_values,
+            pen=None,
+            symbol="o",
+            symbolSize=5,
+            symbolPen=pg.mkPen(color, width=1),
+            symbolBrush=pg.mkBrush("#ffffff"),
+        )
+        _link_visibility(item, points)
+        _register_sample_curve(
+            plot,
+            item,
+            sample_index=index,
+            label=label,
+            x_values=curve_x,
+            y_values=curve_y,
+        )
+        _register_sample_curve(
+            plot,
+            points,
+            sample_index=index,
+            label=label,
+            x_values=x_values,
+            y_values=y_values,
+        )
+        entries.append((index, item, label))
+        all_x.append(x_values)
+
+    _set_sample_legend_entries(plot, entries)
+    if all_x:
+        combined_x = np.concatenate(all_x)
+        plot.setXRange(
+            float(np.log10(np.nanmin(combined_x))),
+            float(np.log10(np.nanmax(combined_x))),
+            padding=0.03,
+        )
+        plot.setYRange(0.0, 100.0, padding=0.04)
+
+    if selected_index is None or not (0 <= selected_index < len(analyses)):
+        return
+    selected = analyses[selected_index]
+    threshold = float(getattr(selected, "threshold_pressure_psia", float("nan")))
+    if not np.isfinite(threshold) or threshold <= 0:
+        return
+    plot.plot(
+        [threshold, threshold],
+        [0.0, 100.0],
+        pen=pg.mkPen("#2563eb", width=1.5, style=QtCore.Qt.DashLine),
+    )
+    plot.plot(
+        [threshold],
+        [0.0],
+        pen=None,
+        symbol="t1",
+        symbolSize=11,
+        symbolPen=pg.mkPen("#2563eb", width=1.5),
+        symbolBrush=pg.mkBrush("#ffffff"),
+        name=f"阈值压力：{threshold:,.2f} psia",
+    )
+
+
 def plot_distribution(plot: pg.PlotWidget, result) -> None:
     plot_distribution_multi(plot, [result], [True], [DEFAULT_COLORS[2]])
 
@@ -1349,6 +1444,127 @@ def plot_distribution_multi(
         plot.setXRange(float(np.log10(np.nanmin(x_values))), float(np.log10(np.nanmax(x_values))), padding=0.03)
         plot.setYRange(float(np.nanmin(y_values)), float(np.nanmax(y_values)), padding=0.08)
     return curve_data_by_index
+
+
+def plot_mayer_stowe_multi(
+    cumulative_plot: pg.PlotWidget,
+    incremental_plot: pg.PlotWidget,
+    analyses,
+    visible: list[bool],
+    colors: list[str],
+) -> None:
+    """Draw Mayer–Stowe cumulative-coarser and incremental-volume curves."""
+    for plot in (cumulative_plot, incremental_plot):
+        plot.clear()
+        _reset_sample_curve_interactions(plot)
+        plot.setLogMode(x=True, y=False)
+
+    cumulative_entries = []
+    incremental_entries = []
+    all_x = []
+    all_cumulative = []
+    all_incremental = []
+    for index, analysis in enumerate(analyses):
+        if index >= len(visible) or not visible[index] or not analysis.is_valid:
+            continue
+        x_values = np.asarray(analysis.particle_diameter, dtype=float)
+        cumulative = np.asarray(analysis.cumulative_coarser_percent, dtype=float)
+        incremental = np.asarray(analysis.incremental_percent, dtype=float)
+        finite = np.isfinite(x_values) & (x_values > 0)
+        if not np.any(finite):
+            continue
+        x_values = x_values[finite]
+        cumulative = cumulative[finite]
+        incremental = incremental[finite]
+        color = colors[index % len(colors)]
+        label = str(getattr(analysis, "sample_name", "") or f"样品 {index + 1}")
+
+        cumulative_curve_x, cumulative_curve_y = smooth_log_distribution_curve(
+            x_values,
+            cumulative,
+        )
+        cumulative_curve_y = np.clip(cumulative_curve_y, 0.0, 100.0)
+        cumulative_item = cumulative_plot.plot(
+            cumulative_curve_x,
+            cumulative_curve_y,
+            pen=pg.mkPen(color, width=2),
+            name=label,
+        )
+        cumulative_points = cumulative_plot.plot(
+            x_values,
+            cumulative,
+            pen=None,
+            symbol="o",
+            symbolSize=5,
+            symbolPen=pg.mkPen(color, width=1),
+            symbolBrush=pg.mkBrush("#ffffff"),
+        )
+        _link_visibility(cumulative_item, cumulative_points)
+        incremental_curve_x, incremental_curve_y = smooth_log_distribution_curve(
+            x_values,
+            incremental,
+        )
+        incremental_item = incremental_plot.plot(
+            incremental_curve_x,
+            incremental_curve_y,
+            pen=pg.mkPen(color, width=2),
+            name=label,
+        )
+        incremental_points = incremental_plot.plot(
+            x_values,
+            incremental,
+            pen=None,
+            symbol="o",
+            symbolSize=5,
+            symbolPen=pg.mkPen(color, width=1),
+            symbolBrush=pg.mkBrush("#ffffff"),
+        )
+        _link_visibility(incremental_item, incremental_points)
+        _register_sample_curve(
+            cumulative_plot,
+            cumulative_item,
+            sample_index=index,
+            label=label,
+            x_values=cumulative_curve_x,
+            y_values=cumulative_curve_y,
+        )
+        _register_sample_curve(
+            incremental_plot,
+            incremental_item,
+            sample_index=index,
+            label=label,
+            x_values=incremental_curve_x,
+            y_values=incremental_curve_y,
+        )
+        cumulative_entries.append((index, cumulative_item, label))
+        incremental_entries.append((index, incremental_item, label))
+        all_x.append(x_values)
+        all_cumulative.append(cumulative_curve_y)
+        all_incremental.append(incremental_curve_y)
+
+    _set_sample_legend_entries(cumulative_plot, cumulative_entries)
+    _set_sample_legend_entries(incremental_plot, incremental_entries)
+    if not all_x:
+        return
+
+    combined_x = np.concatenate(all_x)
+    x_min = float(np.nanmin(combined_x))
+    x_max = float(np.nanmax(combined_x))
+    for plot in (cumulative_plot, incremental_plot):
+        plot.setXRange(float(np.log10(x_min)), float(np.log10(x_max)), padding=0.03)
+    cumulative_values = np.concatenate(all_cumulative)
+    incremental_values = np.concatenate(all_incremental)
+    cumulative_min = float(np.nanmin(cumulative_values))
+    cumulative_max = float(np.nanmax(cumulative_values))
+    if np.isclose(cumulative_min, cumulative_max):
+        cumulative_max = cumulative_min + 1.0
+    cumulative_plot.setYRange(cumulative_min, cumulative_max, padding=0.06)
+
+    incremental_min = min(0.0, float(np.nanmin(incremental_values)))
+    incremental_max = float(np.nanmax(incremental_values))
+    if np.isclose(incremental_min, incremental_max):
+        incremental_max = incremental_min + 1.0
+    incremental_plot.setYRange(incremental_min, incremental_max, padding=0.08)
 
 
 def _link_visibility(primary_item, *linked_items) -> None:

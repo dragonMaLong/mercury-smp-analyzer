@@ -53,6 +53,8 @@ def test_load_smp_returns_stable_core_api() -> None:
 
 @pytest.mark.parametrize("filename", COMMON_SMP_FILES)
 def test_common_smp_files_do_not_crash(filename: str) -> None:
+    if not (DATA_ROOT / filename).exists():
+        pytest.skip("Local SMP reference file is unavailable.")
     result = load_smp(DATA_ROOT / filename)
 
     assert result.data_point_count > 50

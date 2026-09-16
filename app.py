@@ -56,7 +56,7 @@ def _print_cli_summary(result) -> None:
     print(f"中值孔径（体积）: {summary.median_volume_diameter:.9g} nm")
     print(f"中值孔径（面积）: {summary.median_area_diameter:.9g} nm")
     print(f"平均孔径（4V/A）: {summary.average_pore_diameter:.9g} nm")
-    print(f"0.50 psia 体积密度: {summary.bulk_density:.9g} g/mL")
+    print(f"{summary.bulk_density_pressure:.2f} psia 体积密度: {summary.bulk_density:.9g} g/mL")
     print(f"表观骨架密度: {summary.apparent_density:.9g} g/mL")
     print(f"孔隙率: {summary.porosity:.9g} %")
     print(f"最大压力: {result.max_pressure:.9g} psia")

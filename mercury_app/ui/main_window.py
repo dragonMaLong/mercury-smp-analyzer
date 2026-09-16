@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
@@ -14,7 +15,16 @@ os.environ.setdefault("PYQTGRAPH_QT_LIB", "PyQt5")
 import pyqtgraph as pg
 from pyqtgraph.Qt import QT_LIB, QtCore, QtGui, QtWidgets
 
-from mercury_app.core import calculate_microactive, export_results_xlsx, load_smp, metrics_for_pressure_range, summary_metrics
+from mercury_app.core import (
+    calculate_mayer_stowe,
+    calculate_pore_structure,
+    calculate_microactive,
+    default_pore_structure_options,
+    export_results_xlsx,
+    load_smp,
+    metrics_for_pressure_range,
+    summary_metrics,
+)
 from mercury_app.update_checker import DEFAULT_UPDATE_REPOSITORY, UpdateInfo, check_for_update
 from mercury_app.updater import UpdateDownloadError, download_update, launch_update_and_exit
 from mercury_app.ui.plots import (
@@ -23,6 +33,8 @@ from mercury_app.ui.plots import (
     link_sample_curve_hover_plots,
     make_plot,
     plot_distribution_multi,
+    plot_mayer_stowe_multi,
+    plot_cumulative_percent_multi,
     plot_pressure_volume_multi,
     set_sample_curve_selected_plots,
     set_sample_curve_hover_plots,
@@ -38,9 +50,30 @@ APP_ICON_FILE = "mip-dragon-science-logo.ico"
 UPDATE_REPOSITORY = DEFAULT_UPDATE_REPOSITORY
 AUTO_UPDATE_CHECK_DELAY_MS = 3000
 SUPPORTED_SMP_SUFFIXES = (".smp",)
+DEFAULT_PORE_STRUCTURE_PRESSURE_REGION = (400.0, 10000.0)
 
 
 Signal = getattr(QtCore, "Signal", None) or getattr(QtCore, "pyqtSignal")
+
+
+class NumericTableWidgetItem(QtWidgets.QTableWidgetItem):
+    """Table item that keeps formatted text while sorting by its numeric value."""
+
+    def __init__(self, text: str, value: float | None = None) -> None:
+        super().__init__(text)
+        self.numeric_value = float(value) if value is not None and np.isfinite(value) else float("nan")
+
+    def __lt__(self, other) -> bool:
+        if isinstance(other, NumericTableWidgetItem):
+            left = self.numeric_value
+            right = other.numeric_value
+            if np.isfinite(left) and np.isfinite(right):
+                return left < right
+            if np.isfinite(left):
+                return True
+            if np.isfinite(right):
+                return False
+        return super().__lt__(other)
 
 
 def _qt_enum_int(value) -> int:
@@ -140,10 +173,110 @@ class SelectAllCheckBox(QtWidgets.QCheckBox):
             self.setCheckState(QtCore.Qt.Checked)
 
 
+class CenteredCheckBoxDelegate(QtWidgets.QStyledItemDelegate):
+    INDICATOR_SIZE = 11
+
+    @classmethod
+    def _indicator_rect(cls, item_rect: QtCore.QRect) -> QtCore.QRect:
+        rect = QtCore.QRect(0, 0, cls.INDICATOR_SIZE, cls.INDICATOR_SIZE)
+        rect.moveCenter(item_rect.center())
+        return rect
+
+    def paint(self, painter, option, index) -> None:
+        state = index.data(QtCore.Qt.CheckStateRole)
+        if state is None:
+            super().paint(painter, option, index)
+            return
+
+        base_option = QtWidgets.QStyleOptionViewItem(option)
+        self.initStyleOption(base_option, index)
+        base_option.features &= ~QtWidgets.QStyleOptionViewItem.HasCheckIndicator
+        base_option.text = ""
+        style = option.widget.style() if option.widget is not None else QtWidgets.QApplication.style()
+        style.drawControl(QtWidgets.QStyle.CE_ItemViewItem, base_option, painter, option.widget)
+
+        checked = _check_state_value(state) == _check_state_value(QtCore.Qt.Checked)
+        painter.save()
+        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        color = QtGui.QColor("#2563eb" if checked else "#6b7280")
+        painter.setPen(QtGui.QPen(color, 1))
+        painter.setBrush(QtGui.QBrush(QtGui.QColor("#2563eb" if checked else "#ffffff")))
+        painter.drawEllipse(QtCore.QRectF(self._indicator_rect(option.rect)))
+        painter.restore()
+
+    def editorEvent(self, event, model, option, index) -> bool:
+        if not (index.flags() & QtCore.Qt.ItemIsEnabled and index.flags() & QtCore.Qt.ItemIsUserCheckable):
+            return False
+        if event.type() == QtCore.QEvent.MouseButtonRelease and event.button() == QtCore.Qt.LeftButton:
+            position = event.position().toPoint() if hasattr(event, "position") else event.pos()
+            if not self._indicator_rect(option.rect).contains(position):
+                return False
+        elif event.type() == QtCore.QEvent.KeyPress and event.key() in (QtCore.Qt.Key_Space, QtCore.Qt.Key_Select):
+            pass
+        else:
+            return False
+        state = index.data(QtCore.Qt.CheckStateRole)
+        new_state = QtCore.Qt.Unchecked if _check_state_value(state) == _check_state_value(QtCore.Qt.Checked) else QtCore.Qt.Checked
+        return bool(model.setData(index, new_state, QtCore.Qt.CheckStateRole))
+
+
+class SampleRowHoverFilter(QtCore.QObject):
+    sampleHovered = Signal(int)
+
+    def __init__(self, table) -> None:
+        super().__init__(table)
+        self.row = -1
+        views = [table]
+        if hasattr(table, "_frozen_table"):
+            views.append(table._frozen_table)
+        self.views = {view.viewport(): view for view in views}
+        for viewport, view in self.views.items():
+            view.setMouseTracking(True)
+            viewport.setMouseTracking(True)
+            viewport.installEventFilter(self)
+
+    def eventFilter(self, obj, event) -> bool:
+        if obj in self.views:
+            row = self.row
+            if event.type() == QtCore.QEvent.MouseMove:
+                index = self.views[obj].indexAt(event.pos())
+                row = index.row() if index.isValid() else -1
+            elif event.type() in (QtCore.QEvent.Leave, QtCore.QEvent.Hide):
+                row = -1
+            if row != self.row:
+                self.row = row
+                self.sampleHovered.emit(row)
+        return super().eventFilter(obj, event)
+
+
+class FrozenColumnsHeaderView(QtWidgets.QHeaderView):
+    """Paint the frozen boundary inside the header, without a body border."""
+
+    def __init__(self, column_count: int, parent=None) -> None:
+        super().__init__(QtCore.Qt.Horizontal, parent)
+        self.frozen_column_count = column_count
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        column = self.frozen_column_count - 1
+        if column >= self.count() or self.isSectionHidden(column):
+            return
+        x = min(
+            self.sectionViewportPosition(column) + self.sectionSize(column) - 1,
+            self.viewport().width() - 1,
+        )
+        if x >= 0:
+            painter = QtGui.QPainter(self.viewport())
+            painter.setPen(QtGui.QColor("#d1d5db"))
+            painter.drawLine(x, 0, x, self.viewport().height() - 1)
+            painter.end()
+
+
 class SampleTableWidget(QtWidgets.QTableWidget):
     rowHovered = Signal(int)
     rowMoveRequested = Signal(int, int)
     smpFilesDropped = Signal(list)
+    viewportResized = Signal()
     LONG_PRESS_MS = 220
     FROZEN_COLUMN_COUNT = 2
 
@@ -168,15 +301,28 @@ class SampleTableWidget(QtWidgets.QTableWidget):
     def frozen_header(self):
         return self._frozen_table.horizontalHeader()
 
+    def setAlternatingRowColors(self, enable: bool) -> None:
+        super().setAlternatingRowColors(enable)
+        if hasattr(self, "_frozen_table"):
+            self._frozen_table.setAlternatingRowColors(enable)
+
+    def setShowGrid(self, show: bool) -> None:
+        super().setShowGrid(show)
+        if hasattr(self, "_frozen_table"):
+            self._frozen_table.setShowGrid(show)
+
     def _init_frozen_columns(self) -> None:
         self._frozen_table = QtWidgets.QTableView(self)
+        self._frozen_table.setHorizontalHeader(
+            FrozenColumnsHeaderView(self.FROZEN_COLUMN_COUNT, self._frozen_table)
+        )
         self._frozen_table.setModel(self.model())
         self._frozen_table.setSelectionModel(self.selectionModel())
         self._frozen_table.setAcceptDrops(True)
         self._frozen_table.viewport().setAcceptDrops(True)
         self._frozen_table.setFocusPolicy(QtCore.Qt.NoFocus)
         self._frozen_table.setFrameShape(QtWidgets.QFrame.NoFrame)
-        self._frozen_table.setShowGrid(False)
+        self._frozen_table.setShowGrid(self.showGrid())
         self._frozen_table.setAlternatingRowColors(False)
         self._frozen_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self._frozen_table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
@@ -195,7 +341,7 @@ class SampleTableWidget(QtWidgets.QTableWidget):
             QTableView {
                 border: 0;
                 background: #ffffff;
-                alternate-background-color: #ffffff;
+                alternate-background-color: #f7f7f7;
             }
             QTableView::item:selected {
                 background: #e0ecff;
@@ -310,6 +456,8 @@ class SampleTableWidget(QtWidgets.QTableWidget):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._update_frozen_geometry()
+        if event.size().width() != event.oldSize().width():
+            self.viewportResized.emit()
 
     def setColumnWidth(self, column: int, width: int) -> None:
         super().setColumnWidth(column, width)
@@ -352,12 +500,19 @@ class SampleTableWidget(QtWidgets.QTableWidget):
     def _update_frozen_geometry(self) -> None:
         if not hasattr(self, "_frozen_table"):
             return
+        main_header = self.horizontalHeader()
+        frozen_header = self._frozen_table.horizontalHeader()
+        header_height = max(main_header.sizeHint().height(), frozen_header.sizeHint().height())
+        if main_header.height() != header_height:
+            main_header.setFixedHeight(header_height)
+        if frozen_header.height() != header_height:
+            frozen_header.setFixedHeight(header_height)
         width = self._frozen_width()
         self._frozen_table.setGeometry(
             self.frameWidth(),
             self.frameWidth(),
             width,
-            self.viewport().height() + self.horizontalHeader().height(),
+            self.viewport().height() + header_height,
         )
         self._frozen_table.raise_()
 
@@ -523,6 +678,75 @@ class SampleTableWidget(QtWidgets.QTableWidget):
         return paths
 
 
+class FrozenFirstColumnTableWidget(SampleTableWidget):
+    """Resizable value table with a frozen first column and no row dragging."""
+
+    FROZEN_COLUMN_COUNT = 1
+
+    def __init__(self, *args, **kwargs) -> None:
+        self._selection_dragging = False
+        self._selection_anchor = QtCore.QPersistentModelIndex()
+        self._selection_baseline = QtCore.QItemSelection()
+        super().__init__(*args, **kwargs)
+
+    def _index_at_global_position(self, position):
+        frozen = self._frozen_table
+        local = frozen.viewport().mapFromGlobal(position)
+        if frozen.viewport().rect().contains(local):
+            return frozen.indexAt(local)
+        return self.indexAt(self.viewport().mapFromGlobal(position))
+
+    def _select_to_index(self, index) -> None:
+        if not index.isValid() or not self._selection_anchor.isValid():
+            return
+        anchor = self._selection_anchor
+        top = self.model().index(min(anchor.row(), index.row()), min(anchor.column(), index.column()))
+        bottom = self.model().index(max(anchor.row(), index.row()), max(anchor.column(), index.column()))
+        selection = QtCore.QItemSelection(self._selection_baseline)
+        selection.merge(QtCore.QItemSelection(top, bottom), QtCore.QItemSelectionModel.Select)
+        self.selectionModel().select(selection, QtCore.QItemSelectionModel.ClearAndSelect)
+        self.selectionModel().setCurrentIndex(index, QtCore.QItemSelectionModel.NoUpdate)
+
+    def eventFilter(self, obj, event) -> bool:
+        frozen = getattr(self, "_frozen_table", None)
+        if frozen is not None and obj in (self.viewport(), frozen.viewport()):
+            kind = event.type()
+            if kind == QtCore.QEvent.MouseButtonPress and event.button() == QtCore.Qt.LeftButton:
+                index = self._index_at_global_position(obj.mapToGlobal(event.pos()))
+                if index.isValid():
+                    self.setFocus(QtCore.Qt.MouseFocusReason)
+                    if not (event.modifiers() & QtCore.Qt.ShiftModifier) or not self._selection_anchor.isValid():
+                        self._selection_anchor = QtCore.QPersistentModelIndex(index)
+                    self._selection_baseline = (
+                        self.selectionModel().selection()
+                        if event.modifiers() & QtCore.Qt.ControlModifier
+                        else QtCore.QItemSelection()
+                    )
+                    self._selection_dragging = True
+                    self._select_to_index(index)
+                    return True
+            elif kind == QtCore.QEvent.MouseMove and self._selection_dragging:
+                position = obj.mapToGlobal(event.pos())
+                self._select_to_index(self._index_at_global_position(position))
+                self._auto_scroll(self.viewport().mapFromGlobal(position))
+                return True
+            elif kind == QtCore.QEvent.MouseButtonRelease and event.button() == QtCore.Qt.LeftButton:
+                if self._selection_dragging:
+                    self._select_to_index(self._index_at_global_position(obj.mapToGlobal(event.pos())))
+                    self._selection_dragging = False
+                    return True
+        return super().eventFilter(obj, event)
+
+    def _begin_row_drag(self, position: QtCore.QPoint) -> None:
+        self._reset_row_drag()
+
+    def _update_row_drag(self, position: QtCore.QPoint, buttons) -> bool:
+        return False
+
+    def _finish_row_drag(self, position: QtCore.QPoint, button) -> bool:
+        return False
+
+
 def _check_state_value(state) -> int:
     value = getattr(state, "value", state)
     return int(value)
@@ -533,9 +757,9 @@ FILE_COLUMN = 1
 TEST_TIME_COLUMN = 2
 ANGLE_COLUMN = 3
 TENSION_COLUMN = 4
-SELECTED_PORE_VOLUME_COLUMN = 5
 HOVER_BASE_FONT_ROLE = QtCore.Qt.UserRole + 301
 HOVER_BASE_FOREGROUND_ROLE = QtCore.Qt.UserRole + 302
+PARAMETER_VALUE_ROLE = QtCore.Qt.UserRole + 303
 REGION_LINE_COLOR = "#2563eb"
 REGION_LINE_HOVER_COLOR = "#dc2626"
 REGION_FILL_COLOR = (37, 99, 235, 34)
@@ -546,6 +770,45 @@ DISTRIBUTION_REGION_FILL_COLOR = (22, 163, 74, 34)
 DISTRIBUTION_REGION_FILL_HOVER_COLOR = (22, 163, 74, 48)
 DISTRIBUTION_REGION_LABEL_HIDE_MS = 1800
 DEFAULT_DISTRIBUTION_DIAMETER_REGION = (20.0, 90.0)
+DEFAULT_PRESSURE_REGION = (2900.0, 9100.0)
+DEFAULT_MAYER_STOWE_PRESSURE_REGION = (400.0, 10000.0)
+
+
+class ParameterSpinBoxDelegate(QtWidgets.QStyledItemDelegate):
+    """Reliable numeric editor for the contact-angle and surface-tension cells."""
+
+    parameterCommitted = Signal(int, int, float)
+
+    def createEditor(self, parent, option, index):
+        editor = QtWidgets.QDoubleSpinBox(parent)
+        editor.setDecimals(2)
+        editor.setSingleStep(1.0)
+        editor.setAccelerated(True)
+        editor.setKeyboardTracking(False)
+        editor.setAlignment(QtCore.Qt.AlignCenter)
+        editor.setButtonSymbols(QtWidgets.QAbstractSpinBox.UpDownArrows)
+        if index.column() == ANGLE_COLUMN:
+            editor.setRange(90.000001, 179.999999)
+        else:
+            editor.setRange(100.000001, 599.999999)
+        return editor
+
+    def setEditorData(self, editor, index) -> None:
+        value = index.data(PARAMETER_VALUE_ROLE)
+        try:
+            editor.setValue(float(value))
+        except (TypeError, ValueError):
+            editor.setValue(0.0)
+
+    def setModelData(self, editor, model, index) -> None:
+        editor.interpretText()
+        value = float(editor.value())
+        display = f"{value:.6g}"
+        model.setData(index, display, QtCore.Qt.DisplayRole)
+        model.setData(index, value, PARAMETER_VALUE_ROLE)
+        row = index.row()
+        column = index.column()
+        QtCore.QTimer.singleShot(0, lambda: self.parameterCommitted.emit(row, column, value))
 
 
 def _region_pen(color: str) -> QtGui.QPen:
@@ -555,13 +818,20 @@ def _region_pen(color: str) -> QtGui.QPen:
 
 
 class RegionEndpointLabel(pg.TextItem):
-    def __init__(self, index: int, edit_callback) -> None:
+    def __init__(
+        self,
+        index: int,
+        edit_callback,
+        *,
+        line_color: str = DISTRIBUTION_REGION_LINE_COLOR,
+        text_color: str = "#064e3b",
+    ) -> None:
         super().__init__(
             text="",
-            color="#064e3b",
+            color=text_color,
             anchor=(0.5, 1.0),
             fill=pg.mkBrush(255, 255, 255, 245),
-            border=pg.mkPen(DISTRIBUTION_REGION_LINE_COLOR),
+            border=pg.mkPen(line_color),
         )
         self.index = int(index)
         self._edit_callback = edit_callback
@@ -578,23 +848,29 @@ class RegionEndpointLabel(pg.TextItem):
 
 
 class RegionEndpointLineEdit(QtWidgets.QLineEdit):
-    def __init__(self, parent=None) -> None:
+    def __init__(
+        self,
+        parent=None,
+        *,
+        line_color: str = DISTRIBUTION_REGION_LINE_COLOR,
+        text_color: str = "#064e3b",
+    ) -> None:
         super().__init__(parent)
         self.cancel_requested = None
         self.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
         self.setFrame(False)
         self.setFixedSize(48, 22)
         self.setStyleSheet(
-            """
-            QLineEdit {
-                border: 1px solid #16a34a;
+            f"""
+            QLineEdit {{
+                border: 1px solid {line_color};
                 border-radius: 0px;
                 background: rgba(255, 255, 255, 245);
-                color: #064e3b;
+                color: {text_color};
                 padding: 0px 2px;
                 selection-background-color: #0078d7;
                 selection-color: #ffffff;
-            }
+            }}
             """
         )
 
@@ -605,6 +881,152 @@ class RegionEndpointLineEdit(QtWidgets.QLineEdit):
             event.accept()
             return
         super().keyPressEvent(event)
+
+
+class PressureRegionEndpointControls(QtCore.QObject):
+    """Editable pressure labels with their own lifetime across plot redraws."""
+
+    def __init__(self, window, plot) -> None:
+        super().__init__(plot)
+        self.window = window
+        self.plot = plot
+        self.region = None
+        self.labels = []
+        self.editing_index = None
+        self.dirty = False
+        self.is_log = True
+        self.bounds = (0.0, 0.0)
+        self.timer = QtCore.QTimer(self)
+        self.timer.setSingleShot(True)
+        self.timer.setInterval(DISTRIBUTION_REGION_LABEL_HIDE_MS)
+        self.timer.timeout.connect(self.hide_labels)
+        self.editor = RegionEndpointLineEdit(plot, line_color=REGION_LINE_COLOR, text_color="#1e3a8a")
+        self.editor.hide()
+        self.editor.cancel_requested = self.cancel
+        self.editor.textEdited.connect(self._mark_dirty)
+        self.editor.editingFinished.connect(self.commit)
+        view = plot.getPlotItem().getViewBox()
+        view.sigRangeChanged.connect(self.update_positions)
+        view.sigResized.connect(self.update_positions)
+        plot._click_projection_ignore_callback = self.ignore_coordinate_click
+
+    def attach(self, region, pressure_values, *, is_log=True) -> None:
+        self.detach()
+        self.region = region
+        self.is_log = is_log
+        self.bounds = (float(np.nanmin(pressure_values)), float(np.nanmax(pressure_values)))
+        for index in range(2):
+            label = RegionEndpointLabel(index, self.begin_edit, line_color=REGION_LINE_COLOR, text_color="#1e3a8a")
+            self.labels.append(label)
+            self.plot.addItem(label, ignoreBounds=True)
+        region.sigRegionChanged.connect(self._region_changed)
+        region.sigRegionChangeFinished.connect(self.show_labels)
+        self.show_labels()
+
+    def detach(self) -> None:
+        self.timer.stop()
+        self._close_editor()
+        if self.region is not None:
+            self.region.sigRegionChanged.disconnect(self._region_changed)
+            self.region.sigRegionChangeFinished.disconnect(self.show_labels)
+        self.region = None
+        for label in self.labels:
+            self.plot.removeItem(label)
+        self.labels = []
+
+    def values(self) -> list[float]:
+        values = sorted(float(value) for value in self.region.getRegion())
+        return [10.0 ** value for value in values] if self.is_log else values
+
+    def _mark_dirty(self, _text) -> None:
+        self.dirty = True
+
+    def _region_changed(self, *_args) -> None:
+        if self.editing_index is not None and not self.dirty:
+            self._close_editor()
+        self.show_labels()
+
+    def show_labels(self, *_args) -> None:
+        if self.region is None:
+            return
+        self.update_positions()
+        for index, label in enumerate(self.labels):
+            label.setVisible(index != self.editing_index)
+        if self.editing_index is None:
+            self.timer.start()
+
+    def hide_labels(self) -> None:
+        if self.editing_index is None:
+            for label in self.labels:
+                label.hide()
+
+    def update_positions(self, *_args) -> None:
+        if self.region is None:
+            return
+        x_range, y_range = self.plot.getPlotItem().getViewBox().viewRange()
+        for index, (label, x, pressure) in enumerate(zip(self.labels, sorted(self.region.getRegion()), self.values())):
+            label.setText(self.window._format_axis_number(pressure))
+            anchor, offset = self.window._region_label_anchor(self.plot, label, index, x, x_range)
+            label.setAnchor((anchor, 1.0))
+            label.setPos(self.window._view_x_with_pixel_offset_for(self.plot, x, offset), min(y_range))
+            if self.editing_index == index:
+                self.window._position_region_editor(self.plot, self.editor, label)
+
+    def begin_edit(self, index: int) -> None:
+        if self.region is None:
+            return
+        self.timer.stop()
+        self.editing_index = index
+        self.dirty = False
+        self.editor.setText(self.window._format_axis_number(self.values()[index]))
+        self.editor.setFont(self.labels[index].textItem.font())
+        self.editor.show()
+        self.editor.raise_()
+        self.show_labels()
+        self.editor.setFocus(QtCore.Qt.MouseFocusReason)
+        self.editor.selectAll()
+
+    def _close_editor(self) -> None:
+        self.editing_index = None
+        self.dirty = False
+        self.editor.hide()
+        self.editor.clearFocus()
+
+    def cancel(self) -> None:
+        self._close_editor()
+        self.show_labels()
+
+    def commit(self) -> None:
+        if self.editing_index is None or self.region is None:
+            return
+        if not self.dirty or not self.editor.text().strip():
+            self.cancel()
+            return
+        try:
+            value = float(self.editor.text().strip().replace(",", ""))
+            if not np.isfinite(value):
+                raise ValueError
+        except ValueError:
+            self.window.statusBar().showMessage("压力边界必须是有效数字。", 4000)
+            self.editor.selectAll()
+            QtCore.QTimer.singleShot(0, lambda: self.editor.setFocus(QtCore.Qt.OtherFocusReason))
+            return
+        values = self.values()
+        lower, upper = self.bounds
+        epsilon = max(upper - lower, abs(values[1]), 1.0) * 1e-9
+        if self.editing_index == 0:
+            values[0] = max(lower, min(value, values[1] - epsilon))
+        else:
+            values[1] = min(upper, max(value, values[0] + epsilon))
+        self._close_editor()
+        self.region.setRegion(np.log10(values).tolist() if self.is_log else values)
+        self.show_labels()
+
+    def ignore_coordinate_click(self, scene_pos) -> bool:
+        return self.editing_index is not None or any(
+            label.isVisible() and label.sceneBoundingRect().adjusted(-4, -4, 4, 4).contains(scene_pos)
+            for label in self.labels
+        )
 
 
 class FileImportDialog(QtWidgets.QDialog):
@@ -969,7 +1391,40 @@ class MainWindow(QtWidgets.QMainWindow):
         self.selected_pore_volume_sort_ascending = False
         self.region = None
         self.pressure_region_is_log = False
+        self.pressure_region_labels = []
+        self.pressure_region_editor = None
+        self._editing_pressure_endpoint_index = None
+        self._pressure_endpoint_editor_dirty = False
+        self._pressure_endpoint_editor_finishing = False
+        self._editing_pressure_endpoint = False
+        self.pressure_region_label_timer = QtCore.QTimer(self)
+        self.pressure_region_label_timer.setSingleShot(True)
+        self.pressure_region_label_timer.setInterval(DISTRIBUTION_REGION_LABEL_HIDE_MS)
+        self.pressure_region_label_timer.timeout.connect(self._hide_pressure_region_labels)
+        self.mayer_pressure_region = None
+        self.mayer_pressure_region_is_log = False
+        self.mayer_pressure_region_labels = []
+        self.mayer_pressure_region_editor = None
+        self._editing_mayer_pressure_endpoint_index = None
+        self._mayer_pressure_endpoint_editor_dirty = False
+        self._mayer_pressure_endpoint_editor_finishing = False
+        self._editing_mayer_pressure_endpoint = False
+        self.mayer_pressure_region_label_timer = QtCore.QTimer(self)
+        self.mayer_pressure_region_label_timer.setSingleShot(True)
+        self.mayer_pressure_region_label_timer.setInterval(DISTRIBUTION_REGION_LABEL_HIDE_MS)
+        self.mayer_pressure_region_label_timer.timeout.connect(self._hide_mayer_pressure_region_labels)
         self.distribution_curve_data = []
+        self.mayer_stowe_results = []
+        self.pore_structure_results = []
+        self.pore_structure_options = {}
+        self._updating_pore_structure_controls = False
+        self.pore_structure_pressure_region = None
+        self._pore_structure_update_timer = QtCore.QTimer(self)
+        self._pore_structure_update_timer.setSingleShot(True)
+        self._pore_structure_update_timer.setInterval(25)
+        self._pore_structure_update_timer.timeout.connect(self._update_pore_structure_selection)
+        self.pore_structure_sort_column = -1
+        self.pore_structure_sort_ascending = True
         self.distribution_region = None
         self.distribution_region_is_log = False
         self.distribution_region_labels = []
@@ -986,6 +1441,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.distribution_region_label_timer.setInterval(DISTRIBUTION_REGION_LABEL_HIDE_MS)
         self.distribution_region_label_timer.timeout.connect(self._hide_distribution_region_labels)
         self._metrics_pending = False
+        self._mayer_metrics_pending = False
         self._syncing_region_changes = False
         self._checking_for_updates = False
         self._update_thread = None
@@ -1032,6 +1488,10 @@ class MainWindow(QtWidgets.QMainWindow):
             "压力 (psia)",
         )
         self._connect_pressure_log_controls()
+        setattr(self.pressure_plot, "_click_projection_ignore_callback", self._ignore_pressure_coordinate_click)
+        self.pressure_plot.getPlotItem().getViewBox().sigRangeChanged.connect(
+            self._on_pressure_view_range_changed
+        )
         self.distribution_plot = make_plot(
             "孔径分布",
             "dV/dlogD (mL/g)",
@@ -1043,10 +1503,64 @@ class MainWindow(QtWidgets.QMainWindow):
         self.distribution_plot.getPlotItem().getViewBox().sigRangeChanged.connect(
             self._on_distribution_view_range_changed
         )
-        for plot in (self.distribution_plot, self.pressure_plot):
+        self.mayer_stowe_cumulative_plot = make_plot(
+            "Mayer–Stowe 累积体积粗于粒径",
+            "累积体积粗于该粒径 (%)",
+            "Mayer–Stowe 粒径 (nm)",
+            legend_position="right",
+        )
+        self.mayer_stowe_incremental_plot = make_plot(
+            "Mayer–Stowe 增量体积分布",
+            "% Inc. Vol. (%)",
+            "Mayer–Stowe 粒径 (nm)",
+            legend_position="right",
+        )
+        self.mayer_pressure_plot = make_plot(
+            "压力 - 累计孔体积",
+            "累计孔体积 (mL/g)",
+            "压力 (psia)",
+        )
+        self._connect_mayer_pressure_log_controls()
+        setattr(
+            self.mayer_pressure_plot,
+            "_click_projection_ignore_callback",
+            self._ignore_mayer_pressure_coordinate_click,
+        )
+        self.mayer_pressure_plot.getPlotItem().getViewBox().sigRangeChanged.connect(
+            self._on_mayer_pressure_view_range_changed
+        )
+        self.pore_structure_percent_plot = make_plot(
+            "累计体积百分比",
+            "累计体积 (%)",
+            "压力 (psia)",
+            legend_position="right",
+        )
+        self.pore_structure_pressure_plot = make_plot(
+            "压力 - 累计孔体积",
+            "累计孔体积 (mL/g)",
+            "压力 (psia)",
+        )
+        self.pore_pressure_endpoints = PressureRegionEndpointControls(self, self.pore_structure_pressure_plot)
+        for plot in (
+            self.distribution_plot,
+            self.pressure_plot,
+            self.mayer_stowe_cumulative_plot,
+            self.mayer_stowe_incremental_plot,
+            self.mayer_pressure_plot,
+            self.pore_structure_percent_plot,
+            self.pore_structure_pressure_plot,
+        ):
             setattr(plot, "_sample_curve_selected_callback", self._select_sample_from_curve)
             setattr(plot, "_sample_curve_hovered_callback", self._set_hovered_sample_row)
-        link_sample_curve_hover_plots(self.distribution_plot, self.pressure_plot)
+        link_sample_curve_hover_plots(
+            self.distribution_plot,
+            self.pressure_plot,
+            self.mayer_stowe_cumulative_plot,
+            self.mayer_stowe_incremental_plot,
+            self.mayer_pressure_plot,
+            self.pore_structure_percent_plot,
+            self.pore_structure_pressure_plot,
+        )
 
         self.plot_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
         self.plot_splitter.addWidget(self.distribution_plot)
@@ -1068,6 +1582,32 @@ class MainWindow(QtWidgets.QMainWindow):
             """
         )
 
+        self.mayer_stowe_plot_tabs = QtWidgets.QTabWidget()
+        self.mayer_stowe_plot_tabs.addTab(self.mayer_stowe_incremental_plot, "增量体积分布")
+        self.mayer_stowe_plot_tabs.addTab(self.mayer_stowe_cumulative_plot, "累计体积")
+
+        mayer_stowe_page = QtWidgets.QWidget()
+        mayer_stowe_layout = QtWidgets.QVBoxLayout(mayer_stowe_page)
+        mayer_stowe_layout.setContentsMargins(0, 0, 0, 0)
+        mayer_stowe_layout.setSpacing(0)
+        self.mayer_stowe_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        self.mayer_stowe_splitter.addWidget(self.mayer_stowe_plot_tabs)
+        self.mayer_stowe_splitter.addWidget(self.mayer_pressure_plot)
+        self.mayer_stowe_splitter.setChildrenCollapsible(False)
+        self.mayer_stowe_splitter.setHandleWidth(8)
+        self.mayer_stowe_splitter.setStretchFactor(0, 3)
+        self.mayer_stowe_splitter.setStretchFactor(1, 2)
+        self.mayer_stowe_splitter.setSizes([456, 304])
+        self.mayer_stowe_splitter.setStyleSheet(self.plot_splitter.styleSheet())
+        mayer_stowe_layout.addWidget(self.mayer_stowe_splitter, 1)
+
+        pore_structure_page = self._build_pore_structure_page()
+
+        self.analysis_tabs = QtWidgets.QTabWidget()
+        self.analysis_tabs.addTab(self.plot_splitter, "孔径分布")
+        self.analysis_tabs.addTab(mayer_stowe_page, "Mayer Stowe")
+        self.analysis_tabs.addTab(pore_structure_page, "孔结构")
+
         side_panel = QtWidgets.QWidget()
         side_layout = QtWidgets.QVBoxLayout(side_panel)
         side_layout.setContentsMargins(6, 6, 6, 6)
@@ -1085,6 +1625,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.select_all_check = SelectAllCheckBox()
         self.select_all_check.setTristate(True)
         self.select_all_check.setCheckState(QtCore.Qt.Checked)
+        self.select_all_check.setFixedSize(14, 14)
         self.select_all_check.setCursor(QtCore.Qt.PointingHandCursor)
         self.select_all_check.setToolTip("显示或隐藏全部样品")
         self.select_all_check.stateChanged.connect(self.on_select_all_changed)
@@ -1108,14 +1649,15 @@ class MainWindow(QtWidgets.QMainWindow):
             """
         )
 
-        self.sample_list = SampleTableWidget(0, 6)
-        self.sample_list.setHorizontalHeaderLabels(["", "文件名", "测试时间", "接触角", "表面张力", "选区孔容(mL/g)"])
+        self.sample_list = SampleTableWidget(0, 5)
+        self.sample_list.setHorizontalHeaderLabels(["", "文件名", "测试时间", "接触角", "表面张力"])
         sample_header = self.sample_list.horizontalHeader()
         sample_header.setVisible(True)
         sample_header.setSectionsMovable(False)
         sample_header.setHighlightSections(False)
-        sample_header.setStretchLastSection(False)
+        sample_header.setStretchLastSection(True)
         sample_header.setMinimumSectionSize(24)
+        self.sample_list.frozen_header().setMinimumSectionSize(24)
         sample_header.setDefaultAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
         sample_header.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
         sample_header.sectionClicked.connect(self.on_sample_header_clicked)
@@ -1124,10 +1666,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sample_list.horizontalHeaderItem(TEST_TIME_COLUMN).setToolTip("点击按测试时间排序")
         self.sample_list.horizontalHeaderItem(ANGLE_COLUMN).setTextAlignment(QtCore.Qt.AlignCenter)
         self.sample_list.horizontalHeaderItem(TENSION_COLUMN).setTextAlignment(QtCore.Qt.AlignCenter)
-        self.sample_list.horizontalHeaderItem(SELECTED_PORE_VOLUME_COLUMN).setTextAlignment(
-            QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter
-        )
-        self.sample_list.horizontalHeaderItem(SELECTED_PORE_VOLUME_COLUMN).setToolTip("点击按当前选区积分孔容排序")
         self.sample_list.verticalHeader().setVisible(False)
         self.sample_list.verticalHeader().setDefaultSectionSize(28)
         self.sample_list.setShowGrid(False)
@@ -1138,6 +1676,13 @@ class MainWindow(QtWidgets.QMainWindow):
             | QtWidgets.QAbstractItemView.EditKeyPressed
             | QtWidgets.QAbstractItemView.AnyKeyPressed
         )
+        self.parameter_delegate = ParameterSpinBoxDelegate(self.sample_list)
+        self.sample_list.setItemDelegateForColumn(ANGLE_COLUMN, self.parameter_delegate)
+        self.sample_list.setItemDelegateForColumn(TENSION_COLUMN, self.parameter_delegate)
+        self.parameter_delegate.parameterCommitted.connect(self.on_sample_parameter_committed)
+        self.sample_visibility_delegate = CenteredCheckBoxDelegate(self.sample_list)
+        self.sample_list.setItemDelegateForColumn(VISIBLE_COLUMN, self.sample_visibility_delegate)
+        self.sample_list._frozen_table.setItemDelegateForColumn(VISIBLE_COLUMN, self.sample_visibility_delegate)
         self.sample_list.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
         self.sample_list.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
         self.sample_list.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
@@ -1147,8 +1692,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sample_list.setColumnWidth(FILE_COLUMN, 180)
         self.sample_list.setColumnWidth(TEST_TIME_COLUMN, 190)
         self.sample_list.setColumnWidth(ANGLE_COLUMN, 104)
-        self.sample_list.setColumnWidth(TENSION_COLUMN, 118)
-        self.sample_list.setColumnWidth(SELECTED_PORE_VOLUME_COLUMN, 132)
+        self.sample_list.setColumnWidth(TENSION_COLUMN, 104)
         self.sample_list.currentCellChanged.connect(self.on_active_cell_changed)
         self.sample_list.itemChanged.connect(self.on_sample_item_changed)
         self.sample_list.itemClicked.connect(self.on_sample_item_clicked)
@@ -1157,6 +1701,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sample_list.smpFilesDropped.connect(self.add_dropped_files)
         self.sample_list.customContextMenuRequested.connect(self.show_sample_context_menu)
         self.sample_list.horizontalScrollBar().valueChanged.connect(self._position_header_controls)
+        self.sample_list.viewportResized.connect(self._queue_sample_column_fit)
         self.sample_list.setStyleSheet(
             """
             QTableWidget {
@@ -1185,29 +1730,25 @@ class MainWindow(QtWidgets.QMainWindow):
                 border-bottom: 1px solid #d1d5db;
                 color: #374151;
                 font-weight: 600;
-                padding: 4px 24px 4px 6px;
+                padding: 4px 8px 4px 6px;
             }
             """
         )
         self.select_all_check.setParent(self.sample_list.frozen_header())
         self.select_all_check.show()
-        self.angle_info_button = self._make_header_info_button(
-            "进汞接触角",
-            (
-                "进汞接触角是汞进入孔道时使用的汞-样品接触角。<br><br>"
-                "它表示汞对样品表面的非润湿程度。在 Washburn 方程中，它会直接影响压力到孔径的换算，因此修改它会使孔径和孔径分布整体偏移。<br><br>"
-                "实际使用中，这个值通常来自代表性表面的接触角测试，或来自实验室针对相似材料验证过的方法参数。<br><br>"
-                "当前值优先使用 SMP/MicroActive 方法中保存的值。如果文件里没有有效值，本软件会使用常见的 Micromeritics 推荐默认值：130°。"
-            ),
+        self.angle_info_title = "进汞接触角/°"
+        self.angle_info_text = (
+            "进汞接触角是汞进入孔道时使用的汞-样品接触角。<br><br>"
+            "它表示汞对样品表面的非润湿程度。在 Washburn 方程中，它会直接影响压力到孔径的换算，因此修改它会使孔径和孔径分布整体偏移。<br><br>"
+            "实际使用中，这个值通常来自代表性表面的接触角测试，或来自实验室针对相似材料验证过的方法参数。<br><br>"
+            "当前值优先使用 SMP/MicroActive 方法中保存的值。如果文件里没有有效值，本软件会使用常见的 Micromeritics 推荐默认值：130°。"
         )
-        self.surface_info_button = self._make_header_info_button(
-            "表面张力",
-            (
-                "表面张力是 Washburn 方程中使用的汞表面张力。<br><br>"
-                "它描述汞表面的能量状态，会和接触角、压力一起决定计算得到的孔径，因此修改它也会使孔径分布发生偏移。<br><br>"
-                "实际使用中，这个值通常来自测试条件下的汞物性数据，或来自实验室/仪器方法中规定的 AutoPore 分析参数。<br><br>"
-                "当前值优先使用 SMP/MicroActive 方法中保存的值。如果文件里没有有效值，本软件会使用常见的 Micromeritics 推荐默认值：485 dynes/cm。"
-            ),
+        self.surface_info_title = "表面张力/dynes/cm"
+        self.surface_info_text = (
+            "表面张力是 Washburn 方程中使用的汞表面张力。<br><br>"
+            "它描述汞表面的能量状态，会和接触角、压力一起决定计算得到的孔径，因此修改它也会使孔径分布发生偏移。<br><br>"
+            "实际使用中，这个值通常来自测试条件下的汞物性数据，或来自实验室/仪器方法中规定的 AutoPore 分析参数。<br><br>"
+            "当前值优先使用 SMP/MicroActive 方法中保存的值。如果文件里没有有效值，本软件会使用常见的 Micromeritics 推荐默认值：485 dynes/cm。"
         )
 
         sample_panel = QtWidgets.QWidget()
@@ -1219,10 +1760,24 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.metrics_stack = QtWidgets.QStackedWidget()
         self._show_empty_metric_table()
+        self.selected_pore_volume_table = self._make_overview_table("样品", "选区孔容 (mL/g)")
+        self.selected_pore_volume_table.horizontalHeader().sectionClicked.connect(
+            self._on_selected_pore_volume_header_clicked
+        )
+        self.pore_structure_summary_table = self._make_pore_structure_summary_table()
+        self.detail_sample_hover_filters = []
+        for table in (self.selected_pore_volume_table, self.pore_structure_summary_table):
+            hover_filter = SampleRowHoverFilter(table)
+            hover_filter.sampleHovered.connect(self._on_sample_table_row_hovered)
+            self.detail_sample_hover_filters.append(hover_filter)
+        self.detail_tabs = QtWidgets.QTabWidget()
+        self.detail_tabs.addTab(self.metrics_stack, "样品信息")
+        self.detail_tabs.addTab(self.selected_pore_volume_table, "选区孔容")
+        self.detail_tabs.addTab(self.pore_structure_summary_table, "孔结构")
 
         self.left_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
         self.left_splitter.addWidget(sample_panel)
-        self.left_splitter.addWidget(self.metrics_stack)
+        self.left_splitter.addWidget(self.detail_tabs)
         self.left_splitter.setChildrenCollapsible(False)
         self.left_splitter.setHandleWidth(8)
         self.left_splitter.setSizes([28 + 5 * 30 + 6, 520])
@@ -1242,7 +1797,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         splitter.addWidget(side_panel)
-        splitter.addWidget(self.plot_splitter)
+        splitter.addWidget(self.analysis_tabs)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 3)
         splitter.setSizes([380, 900])
@@ -1496,6 +2051,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if hasattr(controls, "logXCheck"):
             controls.logXCheck.stateChanged.connect(self.on_pressure_log_changed)
 
+    def _connect_mayer_pressure_log_controls(self) -> None:
+        controls = self.mayer_pressure_plot.getPlotItem().ctrl
+        if hasattr(controls, "logXCheck"):
+            controls.logXCheck.stateChanged.connect(self.on_mayer_pressure_log_changed)
+
     def _connect_distribution_log_controls(self) -> None:
         controls = self.distribution_plot.getPlotItem().ctrl
         if hasattr(controls, "logXCheck"):
@@ -1619,6 +2179,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         raw_region = self._current_pressure_region()
+        mayer_region = self._current_mayer_pressure_region()
         self._remove_region()
         self.results.extend(new_results)
         self.visible_results.extend([True] * len(new_results))
@@ -1626,7 +2187,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.active_index = 0
             self.result = self.results[0]
 
-        self._refresh_after_file_set(raw_region=raw_region, active_index=self.active_index)
+        self._refresh_after_file_set(
+            raw_region=raw_region,
+            mayer_region=mayer_region,
+            active_index=self.active_index,
+        )
 
     @staticmethod
     def _path_key(path: str | Path) -> str:
@@ -1673,6 +2238,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         raw_region = self._current_pressure_region()
+        mayer_region = self._current_mayer_pressure_region()
         self._remove_region()
         kept_visibility = {id(result): visible for result, visible in zip(self.results, self.visible_results)}
         active_result = self.results[self.active_index] if 0 <= self.active_index < len(self.results) else None
@@ -1683,9 +2249,18 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self.active_index = 0
         self.result = self.results[self.active_index] if self.results else None
-        self._refresh_after_file_set(raw_region=raw_region, active_index=self.active_index)
+        self._refresh_after_file_set(
+            raw_region=raw_region,
+            mayer_region=mayer_region,
+            active_index=self.active_index,
+        )
 
-    def _refresh_after_file_set(self, raw_region: list[float] | None = None, active_index: int | None = None) -> None:
+    def _refresh_after_file_set(
+        self,
+        raw_region: list[float] | None = None,
+        mayer_region: list[float] | None = None,
+        active_index: int | None = None,
+    ) -> None:
         self.setWindowTitle(APP_TITLE)
         self._build_metric_tabs(active_index=active_index)
         self._redraw_plots()
@@ -1694,13 +2269,18 @@ class MainWindow(QtWidgets.QMainWindow):
         pressure = self._all_pressure_values()
         if pressure.size == 0:
             self.update_metrics()
+            self.update_mayer_stowe()
             return
 
         if raw_region is None:
             raw_region = self._default_pressure_region_for_active_result(pressure)
+        if mayer_region is None:
+            mayer_region = self._clamp_pressure_region(list(DEFAULT_MAYER_STOWE_PRESSURE_REGION), pressure)
 
         self._add_pressure_region(raw_region, pressure)
+        self._add_mayer_pressure_region(mayer_region, pressure)
         self.update_metrics()
+        self.update_mayer_stowe()
 
     def add_dropped_files(self, file_paths: list[str]) -> None:
         if not file_paths:
@@ -1727,6 +2307,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.sample_colors,
         )
         plot_pressure_volume_multi(self.pressure_plot, self.results, self.visible_results, self.sample_colors)
+        plot_pressure_volume_multi(self.mayer_pressure_plot, self.results, self.visible_results, self.sample_colors)
+        self.update_pore_structure()
         self._apply_active_sample_curve_selection()
 
     def _build_metric_tabs(self, active_index: int | None = None) -> None:
@@ -1744,6 +2326,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._hovered_sample_row = -1
         if hasattr(self.sample_list, "_hovered_row"):
             self.sample_list._hovered_row = -1
+        for hover_filter in self.detail_sample_hover_filters:
+            hover_filter.row = -1
         self._clear_sample_list()
         while self.metrics_stack.count():
             widget = self.metrics_stack.widget(0)
@@ -1758,6 +2342,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.metric_tables.append(table)
             self.metrics_stack.addWidget(table)
             self._add_sample_row(index, result)
+        self._load_pore_structure_controls(self.active_index)
+        self._rebuild_overview_tables()
         if not self.results:
             self._show_empty_metric_table()
         self.sample_list.blockSignals(False)
@@ -1772,6 +2358,21 @@ class MainWindow(QtWidgets.QMainWindow):
             self.on_active_tab_changed(index)
         if horizontal_scroll_value is not None:
             self._restore_sample_horizontal_scroll(horizontal_scroll_value)
+
+    def _rebuild_overview_tables(self) -> None:
+        self.selected_pore_volume_table.setRowCount(len(self.results))
+        self.pore_structure_summary_table.setRowCount(len(self.results))
+        for row, result in enumerate(self.results):
+            sample_name = self._sample_row_label(result)
+            name_item = QtWidgets.QTableWidgetItem(sample_name)
+            name_item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable)
+            self.selected_pore_volume_table.setItem(row, 0, name_item)
+            summary_name_item = QtWidgets.QTableWidgetItem(sample_name)
+            summary_name_item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable)
+            self.pore_structure_summary_table.setItem(row, 0, summary_name_item)
+            volume_item = QtWidgets.QTableWidgetItem("")
+            volume_item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+            self.selected_pore_volume_table.setItem(row, 1, volume_item)
 
     def _sample_column_widths(self) -> list[int]:
         return [self.sample_list.columnWidth(column) for column in range(self.sample_list.columnCount())]
@@ -1795,81 +2396,70 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sample_list.resizeColumnToContents(FILE_COLUMN)
         self.sample_list.setColumnWidth(FILE_COLUMN, max(180, self.sample_list.columnWidth(FILE_COLUMN) + 18))
         self.sample_list.setColumnWidth(TEST_TIME_COLUMN, 190)
-        self.sample_list.resizeColumnToContents(ANGLE_COLUMN)
-        self.sample_list.setColumnWidth(ANGLE_COLUMN, max(104, self.sample_list.columnWidth(ANGLE_COLUMN) + 24))
-        self.sample_list.resizeColumnToContents(TENSION_COLUMN)
-        self.sample_list.setColumnWidth(TENSION_COLUMN, max(118, self.sample_list.columnWidth(TENSION_COLUMN) + 24))
-        self.sample_list.resizeColumnToContents(SELECTED_PORE_VOLUME_COLUMN)
-        self.sample_list.setColumnWidth(
-            SELECTED_PORE_VOLUME_COLUMN,
-            max(132, self.sample_list.columnWidth(SELECTED_PORE_VOLUME_COLUMN) + 24),
+        header = self.sample_list.horizontalHeader()
+        parameter_width = max(
+            104,
+            *(max(header.sectionSizeHint(column), self.sample_list.sizeHintForColumn(column))
+              for column in (ANGLE_COLUMN, TENSION_COLUMN)),
         )
+        self.sample_list.setColumnWidth(ANGLE_COLUMN, parameter_width)
+        self.sample_list.setColumnWidth(TENSION_COLUMN, parameter_width)
         self._position_header_controls()
+        self._queue_sample_column_fit()
 
-    def _make_header_info_button(self, title: str, text: str) -> QtWidgets.QPushButton:
-        button = QtWidgets.QPushButton("!", self.sample_list.horizontalHeader())
-        button.setFixedSize(15, 15)
-        button.setCursor(QtCore.Qt.PointingHandCursor)
-        button.setToolTip(title)
-        button.clicked.connect(
-            lambda checked=False, heading=title, message=text: self.show_header_info(heading, message)
+    def _queue_sample_column_fit(self) -> None:
+        if getattr(self, "_sample_column_fit_pending", False):
+            return
+        self._sample_column_fit_pending = True
+        QtCore.QTimer.singleShot(0, self._fit_sample_columns_to_viewport)
+
+    def _fit_sample_columns_to_viewport(self) -> None:
+        self._sample_column_fit_pending = False
+        table = self.sample_list
+        parameter_width = table.columnWidth(ANGLE_COLUMN)
+        remaining = (
+            table.viewport().width()
+            - table.columnWidth(VISIBLE_COLUMN)
+            - table.columnWidth(FILE_COLUMN)
+            - 2 * parameter_width
         )
-        button.setStyleSheet(
-            """
-            QPushButton {
-                border: 1px solid #cbd5e1;
-                border-radius: 8px;
-                background: #f8fafc;
-                color: #64748b;
-                font-weight: 700;
-                padding: 0;
-            }
-            QPushButton:hover {
-                background: #f1f5f9;
-                border-color: #94a3b8;
-            }
-            """
-        )
-        button.show()
-        return button
+        # Fit on viewport changes only; column dragging keeps Qt's normal
+        # interactive behavior, with the final column filling the right edge.
+        table.setColumnWidth(TEST_TIME_COLUMN, max(190, remaining))
+        table.setColumnWidth(TENSION_COLUMN, parameter_width)
+        self._position_header_controls()
 
     def _position_header_controls(self, *args) -> None:
         frozen_header = self.sample_list.frozen_header() if hasattr(self.sample_list, "frozen_header") else self.sample_list.horizontalHeader()
         if not frozen_header.isVisible():
             return
-        size = self.select_all_check.sizeHint()
+        size = self.select_all_check.size()
         x = frozen_header.sectionViewportPosition(VISIBLE_COLUMN) + (
             frozen_header.sectionSize(VISIBLE_COLUMN) - size.width()
         ) // 2
         y = (frozen_header.height() - size.height()) // 2
         self.select_all_check.setVisible(x + size.width() > 0 and x < frozen_header.width())
         self.select_all_check.setGeometry(x, y, size.width(), size.height())
-        if hasattr(self, "angle_info_button"):
-            self._position_header_info_button(self.angle_info_button, ANGLE_COLUMN)
-        if hasattr(self, "surface_info_button"):
-            self._position_header_info_button(self.surface_info_button, TENSION_COLUMN)
 
-    def _position_header_info_button(self, button: QtWidgets.QPushButton, column: int) -> None:
-        header = self.sample_list.horizontalHeader()
-        size = button.size()
-        x = header.sectionViewportPosition(column) + header.sectionSize(column) - size.width() - 8
-        y = (header.height() - size.height()) // 2
-        visible = x + size.width() > 0 and x < header.width()
-        button.setVisible(visible)
-        button.setGeometry(x, y, size.width(), size.height())
-
-    def show_header_info(self, title: str, text: str) -> None:
+    def show_header_info(self, title: str, text: str, section: int | None = None) -> None:
         html = (
             "<div style='white-space: normal; width: 420px;'>"
             f"<b>{title}</b><br><br>{text}"
             "</div>"
         )
-        QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), html, self.sample_list.horizontalHeader(), QtCore.QRect(), 16000)
+        header = self.sample_list.horizontalHeader()
+        if section is None:
+            position = QtGui.QCursor.pos()
+        else:
+            x = header.sectionViewportPosition(section) + header.sectionSize(section) // 2
+            position = header.mapToGlobal(QtCore.QPoint(x, header.height()))
+        QtWidgets.QToolTip.showText(position, html, header, QtCore.QRect(), 16000)
 
     def show_sample_context_menu(self, position: QtCore.QPoint) -> None:
         index = self.sample_list.rowAt(position.y())
         if index < 0:
             return
+        column = self.sample_list.columnAt(position.x())
 
         selected_rows = self._selected_sample_rows()
         if index not in selected_rows:
@@ -1901,11 +2491,22 @@ class MainWindow(QtWidgets.QMainWindow):
             }
             """
         )
+        apply_action = None
+        if column in (ANGLE_COLUMN, TENSION_COLUMN):
+            value_key = "adv_contact_angle_deg" if column == ANGLE_COLUMN else "surface_tension_dynes_cm"
+            value = self.results[index].metadata.get(value_key)
+            value_text = self._format_parameter_value(value, "")
+            label = "接触角" if column == ANGLE_COLUMN else "表面张力"
+            apply_action = menu.addAction(f"将此{label}（{value_text}）应用到全部样品")
+            menu.addSeparator()
+
         delete_text = "删除" if len(selected_rows) <= 1 else f"删除选中 {len(selected_rows)} 个样品"
         delete_action = menu.addAction(delete_text)
         global_position = self.sample_list.viewport().mapToGlobal(position)
         selected_action = menu.exec_(global_position) if hasattr(menu, "exec_") else menu.exec(global_position)
-        if selected_action == delete_action:
+        if apply_action is not None and selected_action == apply_action:
+            self.apply_sample_parameter_to_all(index, column)
+        elif selected_action == delete_action:
             self.delete_samples(selected_rows)
 
     def _selected_sample_rows(self) -> list[int]:
@@ -1922,6 +2523,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         active_result = self.result
         raw_region = self._current_pressure_region()
+        mayer_region = self._current_mayer_pressure_region()
         self._remove_region()
         for index in reversed(rows):
             del self.results[index]
@@ -1942,21 +2544,29 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if not self.results:
             self.update_metrics()
+            self.update_mayer_stowe()
             return
 
         self._add_distribution_selection_items()
         pressure = self._all_pressure_values()
         if pressure.size == 0:
             self.update_metrics()
+            self.update_mayer_stowe()
             return
 
         if raw_region is None:
             raw_region = self._default_pressure_region_for_active_result(pressure)
         else:
             raw_region = self._clamp_pressure_region(raw_region, pressure)
+        if mayer_region is None:
+            mayer_region = self._clamp_pressure_region(list(DEFAULT_MAYER_STOWE_PRESSURE_REGION), pressure)
+        else:
+            mayer_region = self._clamp_pressure_region(mayer_region, pressure)
 
         self._add_pressure_region(raw_region, pressure)
+        self._add_mayer_pressure_region(mayer_region, pressure)
         self.update_metrics()
+        self.update_mayer_stowe()
 
     def _clear_sample_list(self) -> None:
         self.sample_list.blockSignals(True)
@@ -1993,8 +2603,6 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.sample_list.setItem(index, ANGLE_COLUMN, angle_item)
         self.sample_list.setItem(index, TENSION_COLUMN, tension_item)
-        self.sample_list.setItem(index, SELECTED_PORE_VOLUME_COLUMN, self._make_selected_pore_volume_item(None))
-
         self.sample_items.append(visible_item)
 
     def _sample_row_label(self, result) -> str:
@@ -2004,31 +2612,16 @@ class MainWindow(QtWidgets.QMainWindow):
         return self._display_text(result.metadata.get("created"))
 
     def _make_parameter_item(self, result, value_key: str, override_key: str, suffix: str) -> QtWidgets.QTableWidgetItem:
-        item = QtWidgets.QTableWidgetItem(self._format_parameter_value(result.metadata.get(value_key), suffix))
+        value = result.metadata.get(value_key)
+        item = QtWidgets.QTableWidgetItem(self._format_parameter_value(value, ""))
         item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEditable)
         item.setTextAlignment(QtCore.Qt.AlignCenter)
         item.setData(QtCore.Qt.UserRole, value_key)
+        item.setData(PARAMETER_VALUE_ROLE, value)
         item.setForeground(
             QtGui.QBrush(QtGui.QColor("#111827" if result.metadata.get(override_key) else "#9ca3af"))
         )
         return item
-
-    def _make_selected_pore_volume_item(self, value) -> QtWidgets.QTableWidgetItem:
-        item = QtWidgets.QTableWidgetItem(self._format_selected_pore_volume(value))
-        item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable)
-        item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-        item.setForeground(QtGui.QBrush(QtGui.QColor("#047857")))
-        return item
-
-    def _set_selected_pore_volume_cell(self, row: int, value) -> None:
-        if not (0 <= row < self.sample_list.rowCount()):
-            return
-        item = self.sample_list.item(row, SELECTED_PORE_VOLUME_COLUMN)
-        if item is None:
-            item = self._make_selected_pore_volume_item(value)
-            self.sample_list.setItem(row, SELECTED_PORE_VOLUME_COLUMN, item)
-            return
-        item.setText(self._format_selected_pore_volume(value))
 
     @staticmethod
     def _format_selected_pore_volume(value) -> str:
@@ -2047,12 +2640,404 @@ class MainWindow(QtWidgets.QMainWindow):
         table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
         table.verticalHeader().setVisible(False)
         table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        table.setAlternatingRowColors(True)
         return table
+
+    def _make_overview_table(self, left_header: str, right_header: str) -> QtWidgets.QTableWidget:
+        table = QtWidgets.QTableWidget(0, 2)
+        table.setHorizontalHeaderLabels([left_header, right_header])
+        table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        table.setAlternatingRowColors(True)
+        table.setWordWrap(True)
+        return table
+
+    def _make_pore_structure_summary_table(self) -> QtWidgets.QTableWidget:
+        headers = [
+            "样品",
+            "压汞比表面积 (m²/g)",
+            "体积密度 (g/mL)",
+            "骨架密度 (g/mL)",
+            "渗透率 (mdarcy)",
+            "阈值压力 (psia)",
+            "特征长度 (nm)",
+            "传导形成因子",
+            "曲折因子",
+            "曲折度",
+        ]
+        table = FrozenFirstColumnTableWidget(0, len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectItems)
+        table._frozen_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectItems)
+        table._frozen_table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        table.customContextMenuRequested.connect(self._show_pore_structure_copy_menu)
+        # QTableView otherwise selects a whole column on a header press.
+        # Headers here trigger sorting; cell selection is reserved for copying.
+        for header in (table.horizontalHeader(), table.frozen_header()):
+            header.sectionPressed.disconnect()
+            header.sectionEntered.disconnect()
+        table.horizontalHeader().sectionClicked.connect(self._sort_pore_structure_summary)
+        table.horizontalHeader().setSectionsClickable(True)
+        table.horizontalHeader().setHighlightSections(False)
+        table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
+        table.horizontalHeader().setStretchLastSection(False)
+        table.horizontalHeader().setSortIndicatorShown(False)
+        table.frozen_header().setSortIndicatorShown(False)
+        table.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
+        table.setAlternatingRowColors(True)
+        header_style = """
+            QHeaderView::section {
+                background: #f9fafb;
+                border: 0;
+                border-right: 1px solid #d1d5db;
+                border-bottom: 1px solid #d1d5db;
+                color: #374151;
+                font-weight: 600;
+                padding: 4px 8px 4px 6px;
+            }
+        """
+        for header in (table.horizontalHeader(), table.frozen_header()):
+            header.setStyleSheet(header_style)
+            header.ensurePolished()
+        header_font = QtGui.QFont(table.horizontalHeader().font())
+        header_font.setBold(True)
+        header_metrics = QtGui.QFontMetrics(header_font)
+        for column, width in enumerate((120, 160, 140, 140, 126, 130, 118, 126, 96, 90)):
+            title_width = header_metrics.horizontalAdvance(headers[column]) + 20
+            table.setColumnWidth(column, max(width, title_width, table.horizontalHeader().sectionSizeHint(column)))
+        table._update_frozen_geometry()
+        shortcut_class = getattr(QtGui, "QShortcut", None) or QtWidgets.QShortcut
+        table.copy_shortcut = shortcut_class(QtGui.QKeySequence.Copy, table)
+        table.copy_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
+        table.copy_shortcut.activated.connect(self._copy_pore_structure_selection)
+        return table
+
+    def _sort_pore_structure_summary(self, column: int) -> None:
+        if column == 0:
+            return
+        self.pore_structure_summary_table.clearSelection()
+        if column == self.pore_structure_sort_column:
+            self.pore_structure_sort_ascending = not self.pore_structure_sort_ascending
+        else:
+            self.pore_structure_sort_column = int(column)
+            self.pore_structure_sort_ascending = True
+        attribute_by_column = {
+            4: "permeability_md",
+            5: "threshold_pressure_psia",
+            6: "characteristic_length_nm",
+            7: "conductivity_formation_factor",
+            8: "tortuosity_factor",
+            9: "tortuosity",
+        }
+        calculated_attribute = {1: "total_pore_area", 2: "bulk_density", 3: "apparent_density"}.get(column)
+        if calculated_attribute is not None:
+            values = {
+                id(result): float(getattr(summary_metrics(result), calculated_attribute))
+                for result in self.results
+            }
+            self._sort_samples(
+                lambda result: values.get(id(result), float("nan")),
+                self.pore_structure_sort_ascending,
+            )
+            return
+        attribute = attribute_by_column.get(column)
+        if attribute is None:
+            return
+        values = {
+            id(result): float(getattr(analysis, attribute, float("nan")))
+            for result, analysis in zip(self.results, self.pore_structure_results)
+        }
+        self._sort_samples(
+            lambda result: values.get(id(result), float("nan")),
+            self.pore_structure_sort_ascending,
+        )
+
+    def _show_pore_structure_copy_menu(self, position: QtCore.QPoint) -> None:
+        table = self.pore_structure_summary_table
+        selected = table.selectedIndexes()
+        if not selected:
+            return
+        menu = QtWidgets.QMenu(table)
+        menu.setStyleSheet("""
+            QMenu {
+                background: #ffffff;
+                border: 1px solid #d1d5db;
+                padding: 3px;
+            }
+            QMenu::item {
+                color: #111827;
+                background: transparent;
+                padding: 6px 12px;
+                margin: 0;
+            }
+            QMenu::item:selected { background: #e0ecff; }
+            QMenu::indicator { width: 0; height: 0; }
+        """)
+        action = menu.addAction("复制")
+        global_position = table.viewport().mapToGlobal(position)
+        chosen = menu.exec_(global_position) if hasattr(menu, "exec_") else menu.exec(global_position)
+        if chosen == action:
+            self._copy_pore_structure_selection()
+
+    def _copy_pore_structure_selection(self) -> None:
+        table = self.pore_structure_summary_table
+        selected = table.selectedIndexes()
+        if not selected:
+            return
+        rows = sorted({index.row() for index in selected})
+        columns = sorted({0} | {index.column() for index in selected})
+        selected_pairs = {(index.row(), index.column()) for index in selected}
+        header = [table.horizontalHeaderItem(column).text() for column in columns]
+        lines = ["\t".join(header)]
+        for row in rows:
+            values = []
+            for column in columns:
+                item = table.item(row, column)
+                included = column == 0 or (row, column) in selected_pairs
+                values.append(item.text() if item is not None and included else "")
+            lines.append("\t".join(values))
+        QtWidgets.QApplication.clipboard().setText("\n".join(lines))
+        self.statusBar().showMessage("已复制所选孔结构数据（含列名和样品名）", 2200)
+
+    def _build_pore_structure_page(self) -> QtWidgets.QWidget:
+        page = QtWidgets.QWidget()
+        page_layout = QtWidgets.QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.setSpacing(0)
+
+        parameter_panel = QtWidgets.QWidget()
+        parameter_panel.setMinimumWidth(220)
+        parameter_panel.setMaximumWidth(290)
+        self.pore_parameter_panel = parameter_panel
+        panel_layout = QtWidgets.QVBoxLayout(parameter_panel)
+        panel_layout.setContentsMargins(10, 10, 10, 10)
+        panel_layout.setSpacing(8)
+
+        area_group = QtWidgets.QGroupBox("比表面积")
+        area_layout = QtWidgets.QFormLayout(area_group)
+        self.pore_surface_area_mode_combo = QtWidgets.QComboBox()
+        self.pore_surface_area_mode_combo.addItems(["BET 输入值", "压汞计算值"])
+        self.pore_surface_area_mode_combo.setCurrentIndex(1)
+        self.pore_surface_area_mode_combo.setToolTip(
+            "BET 输入值来自气体吸附比表面积；压汞计算值来自圆柱孔模型。该面积主要影响曲折因子。"
+        )
+        self.pore_surface_area_spin = self._pore_double_spin(0.0, 1.0e7, 4)
+        self.pore_surface_area_spin.setToolTip("输入样品的 BET 比表面积；官方界面截图中的示例为 500 m²/g。")
+        self.pore_calculated_surface_area_edit = QtWidgets.QLineEdit("—")
+        self.pore_calculated_surface_area_edit.setReadOnly(True)
+        self.pore_calculated_surface_area_edit.setToolTip("当前样品由压汞数据计算的比表面积。")
+        area_layout.addRow("来源", self.pore_surface_area_mode_combo)
+        area_layout.addRow("BET", self._pore_input_with_unit(self.pore_surface_area_spin, "m²/g"))
+        area_layout.addRow("压汞", self._pore_input_with_unit(self.pore_calculated_surface_area_edit, "m²/g"))
+        panel_layout.addWidget(area_group)
+
+        density_group = QtWidgets.QGroupBox("密度")
+        density_layout = QtWidgets.QFormLayout(density_group)
+        self.pore_use_entered_density_check = QtWidgets.QCheckBox("使用输入密度")
+        self.pore_use_entered_density_check.setToolTip("不勾选时，体积密度和骨架密度由当前压汞数据计算。")
+        self.pore_bulk_density_spin = self._pore_double_spin(0.000001, 1000.0, 6)
+        self.pore_skeletal_density_spin = self._pore_double_spin(0.000001, 1000.0, 6)
+        self.pore_bulk_density_spin.setToolTip("样品包络体积对应的体积密度，用于连通孔隙和渗透率计算。")
+        self.pore_skeletal_density_spin.setToolTip("扣除可进入孔体积后的骨架/真密度，用于曲折度计算。")
+        density_layout.addRow(self.pore_use_entered_density_check)
+        density_layout.addRow("体积密度", self._pore_input_with_unit(self.pore_bulk_density_spin, "g/mL"))
+        density_layout.addRow("骨架密度", self._pore_input_with_unit(self.pore_skeletal_density_spin, "g/mL"))
+        panel_layout.addWidget(density_group)
+
+        transport_group = QtWidgets.QGroupBox("传输参数")
+        transport_layout = QtWidgets.QFormLayout(transport_group)
+        self.pore_use_entered_conductivity_check = QtWidgets.QCheckBox("使用输入传导形成因子")
+        self.pore_use_entered_conductivity_check.setToolTip(
+            "勾选后直接用输入值计算渗透率；不勾选时由 Katz–Thompson 的最大传导长度计算。"
+        )
+        self.pore_conductivity_spin = self._pore_double_spin(0.0, 1.0e6, 6)
+        self.pore_permeability_constant_spin = self._pore_double_spin(0.000000001, 1.0e6, 6)
+        self.pore_shape_exponent_spin = self._pore_double_spin(-0.99, 100.0, 3)
+        self.pore_conductivity_spin.setToolTip("孔隙介质电导率与孔内流体电导率之比 σ/σ₀。")
+        self.pore_permeability_constant_spin.setToolTip("Katz–Thompson 常数 C，官方默认 1/226 ≈ 0.00442。")
+        self.pore_shape_exponent_spin.setToolTip("Carniglia 孔形指数 ε；圆柱孔默认取 1。")
+        transport_layout.addRow(self.pore_use_entered_conductivity_check)
+        transport_layout.addRow("传导形成因子", self.pore_conductivity_spin)
+        transport_layout.addRow("渗透率常数", self.pore_permeability_constant_spin)
+        transport_layout.addRow("孔形指数", self.pore_shape_exponent_spin)
+        panel_layout.addWidget(transport_group)
+        panel_layout.addStretch(1)
+
+        upper = QtWidgets.QWidget()
+        upper_layout = QtWidgets.QHBoxLayout(upper)
+        upper_layout.setContentsMargins(0, 0, 0, 0)
+        upper_layout.setSpacing(0)
+        upper_layout.addWidget(parameter_panel)
+        self.pore_parameter_toggle = QtWidgets.QToolButton()
+        self.pore_parameter_toggle.setText("◀")
+        self.pore_parameter_toggle.setFixedWidth(22)
+        self.pore_parameter_toggle.setToolTip("隐藏参数栏")
+        self.pore_parameter_toggle.clicked.connect(self._toggle_pore_parameter_panel)
+        upper_layout.addWidget(self.pore_parameter_toggle, 0, QtCore.Qt.AlignTop)
+        upper_layout.addWidget(self.pore_structure_percent_plot, 1)
+        upper.setMinimumHeight(0)
+        self.pore_structure_percent_plot.setMinimumHeight(0)
+        self.pore_structure_pressure_plot.setMinimumHeight(0)
+
+        self.pore_structure_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        self.pore_structure_splitter.addWidget(upper)
+        self.pore_structure_splitter.addWidget(self.pore_structure_pressure_plot)
+        self.pore_structure_splitter.setChildrenCollapsible(True)
+        self.pore_structure_splitter.setHandleWidth(8)
+        self.pore_structure_splitter.setStretchFactor(0, 3)
+        self.pore_structure_splitter.setStretchFactor(1, 2)
+        self.pore_structure_splitter.setSizes([456, 304])
+        self.pore_structure_splitter.setStyleSheet(self.plot_splitter.styleSheet())
+        page_layout.addWidget(self.pore_structure_splitter, 1)
+
+        for control in (
+            self.pore_surface_area_mode_combo,
+            self.pore_use_entered_density_check,
+            self.pore_use_entered_conductivity_check,
+        ):
+            if isinstance(control, QtWidgets.QComboBox):
+                control.currentIndexChanged.connect(self._on_pore_structure_controls_changed)
+            else:
+                control.stateChanged.connect(self._on_pore_structure_controls_changed)
+        for control in (
+            self.pore_surface_area_spin,
+            self.pore_bulk_density_spin,
+            self.pore_skeletal_density_spin,
+            self.pore_conductivity_spin,
+            self.pore_permeability_constant_spin,
+            self.pore_shape_exponent_spin,
+        ):
+            control.valueChanged.connect(self._on_pore_structure_controls_changed)
+        self._update_pore_structure_control_states()
+        return page
+
+    @staticmethod
+    def _pore_input_with_unit(control: QtWidgets.QWidget, unit: str) -> QtWidgets.QWidget:
+        field = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(field)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(5)
+        control.setMinimumWidth(0)
+        control.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Fixed)
+        label = QtWidgets.QLabel(unit)
+        label.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        layout.addWidget(control, 1)
+        layout.addWidget(label)
+        return field
+
+    @staticmethod
+    def _pore_double_spin(
+        minimum: float,
+        maximum: float,
+        decimals: int,
+        suffix: str = "",
+    ) -> QtWidgets.QDoubleSpinBox:
+        spin = QtWidgets.QDoubleSpinBox()
+        spin.setRange(minimum, maximum)
+        spin.setDecimals(decimals)
+        spin.setKeyboardTracking(False)
+        spin.setSuffix(suffix)
+        spin.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
+        return spin
+
+    def _toggle_pore_parameter_panel(self) -> None:
+        visible = not self.pore_parameter_panel.isVisible()
+        self.pore_parameter_panel.setVisible(visible)
+        self.pore_parameter_toggle.setText("◀" if visible else "▶")
+        self.pore_parameter_toggle.setToolTip("隐藏参数栏" if visible else "显示参数栏")
 
     def _show_empty_metric_table(self) -> None:
         table = self._make_metric_table()
         table.setRowCount(0)
         self.metrics_stack.addWidget(table)
+
+    def _pore_options_for_result(self, result):
+        key = id(result)
+        options = self.pore_structure_options.get(key)
+        if options is None:
+            options = default_pore_structure_options(result)
+            self.pore_structure_options[key] = options
+        return options
+
+    def _load_pore_structure_controls(self, index: int) -> None:
+        if not (0 <= index < len(self.results)):
+            self.pore_calculated_surface_area_edit.setText("—")
+            return
+        options = self._pore_options_for_result(self.results[index])
+        summary = summary_metrics(self.results[index])
+        self._show_pore_calculated_surface_area(summary.total_pore_area)
+        calculated_bulk = summary.bulk_density
+        calculated_skeletal = summary.apparent_density
+        self._updating_pore_structure_controls = True
+        try:
+            self.pore_surface_area_mode_combo.setCurrentIndex(1 if options.use_calculated_surface_area else 0)
+            self.pore_surface_area_spin.setValue(max(0.0, float(options.surface_area_m2g or 0.0)))
+            self.pore_use_entered_density_check.setChecked(options.use_entered_density)
+            bulk = options.bulk_density_gmL if options.use_entered_density else calculated_bulk
+            skeletal = options.skeletal_density_gmL if options.use_entered_density else calculated_skeletal
+            if np.isfinite(float(bulk or 0.0)) and float(bulk or 0.0) > 0:
+                self.pore_bulk_density_spin.setValue(float(bulk))
+            if np.isfinite(float(skeletal or 0.0)) and float(skeletal or 0.0) > 0:
+                self.pore_skeletal_density_spin.setValue(float(skeletal))
+            self.pore_use_entered_conductivity_check.setChecked(options.use_entered_conductivity_factor)
+            self.pore_conductivity_spin.setValue(max(0.0, float(options.conductivity_formation_factor)))
+            self.pore_permeability_constant_spin.setValue(max(1e-9, float(options.permeability_constant)))
+            self.pore_shape_exponent_spin.setValue(float(options.pore_shape_exponent))
+        finally:
+            self._updating_pore_structure_controls = False
+        self._update_pore_structure_control_states()
+
+    def _show_pore_calculated_surface_area(self, value: float) -> None:
+        self.pore_calculated_surface_area_edit.setText(
+            f"{value:.4f}" if np.isfinite(value) else "—"
+        )
+
+    def _update_pore_structure_control_states(self) -> None:
+        calculated_area = self.pore_surface_area_mode_combo.currentIndex() == 1
+        self.pore_surface_area_spin.setEnabled(not calculated_area)
+        entered_density = self.pore_use_entered_density_check.isChecked()
+        self.pore_bulk_density_spin.setEnabled(entered_density)
+        self.pore_skeletal_density_spin.setEnabled(entered_density)
+        # Match disabled density-field colors without disabling selection/copy.
+        density_palette = self.pore_bulk_density_spin.lineEdit().palette()
+        area_palette = self.pore_calculated_surface_area_edit.palette()
+        for group in (QtGui.QPalette.Active, QtGui.QPalette.Inactive, QtGui.QPalette.Disabled):
+            for role in (QtGui.QPalette.Base, QtGui.QPalette.Text):
+                area_palette.setBrush(group, role, density_palette.brush(QtGui.QPalette.Disabled, role))
+        self.pore_calculated_surface_area_edit.setPalette(area_palette)
+        self.pore_conductivity_spin.setEnabled(self.pore_use_entered_conductivity_check.isChecked())
+
+    def _on_pore_structure_controls_changed(self, _value=None) -> None:
+        if self._updating_pore_structure_controls:
+            return
+        index = self.active_index
+        if not (0 <= index < len(self.results)):
+            return
+        self._update_pore_structure_control_states()
+        previous = self._pore_options_for_result(self.results[index])
+        options = replace(
+            previous,
+            surface_area_m2g=float(self.pore_surface_area_spin.value()),
+            use_calculated_surface_area=self.pore_surface_area_mode_combo.currentIndex() == 1,
+            use_entered_density=self.pore_use_entered_density_check.isChecked(),
+            bulk_density_gmL=float(self.pore_bulk_density_spin.value()),
+            skeletal_density_gmL=float(self.pore_skeletal_density_spin.value()),
+            use_entered_conductivity_factor=self.pore_use_entered_conductivity_check.isChecked(),
+            conductivity_formation_factor=float(self.pore_conductivity_spin.value()),
+            permeability_constant=float(self.pore_permeability_constant_spin.value()),
+            pore_shape_exponent=float(self.pore_shape_exponent_spin.value()),
+            use_entered_threshold_pressure=False,
+            threshold_pressure_psia=None,
+        )
+        self.pore_structure_options[id(self.results[index])] = options
+        self.update_pore_structure()
 
     def on_active_tab_changed(self, index: int) -> None:
         if 0 <= index < len(self.results):
@@ -2064,17 +3049,29 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.sample_list.setCurrentCell(index, FILE_COLUMN)
                 self.sample_list.blockSignals(False)
             self.update_metrics()
+            self.update_mayer_stowe()
+            self._load_pore_structure_controls(index)
+            self.update_pore_structure()
             self._apply_active_sample_curve_selection()
 
     def on_sample_header_clicked(self, section: int) -> None:
+        if section == ANGLE_COLUMN:
+            self.show_header_info(self.angle_info_title, self.angle_info_text, section)
+            return
+        if section == TENSION_COLUMN:
+            self.show_header_info(self.surface_info_title, self.surface_info_text, section)
+            return
         if len(self.results) < 2:
             return
         if section == TEST_TIME_COLUMN:
             self.test_time_sort_ascending = not self.test_time_sort_ascending
             self.sort_samples_by_test_time(self.test_time_sort_ascending)
-        elif section == SELECTED_PORE_VOLUME_COLUMN:
-            self.selected_pore_volume_sort_ascending = not self.selected_pore_volume_sort_ascending
-            self.sort_samples_by_selected_pore_volume(self.selected_pore_volume_sort_ascending)
+
+    def _on_selected_pore_volume_header_clicked(self, section: int) -> None:
+        if section != 1 or len(self.results) < 2:
+            return
+        self.selected_pore_volume_sort_ascending = not self.selected_pore_volume_sort_ascending
+        self.sort_samples_by_selected_pore_volume(self.selected_pore_volume_sort_ascending)
 
     def sort_samples_by_test_time(self, ascending: bool) -> None:
         self._sort_samples(lambda result: self._test_time_sort_key(result), ascending)
@@ -2173,11 +3170,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self.statusBar().showMessage(f"已切换到样品：{self._sample_row_label(self.results[int(row)])}", 2200)
 
     def _sample_hover_plots(self) -> tuple[object, ...]:
-        return (self.distribution_plot, self.pressure_plot)
+        return (
+            self.distribution_plot,
+            self.pressure_plot,
+            self.mayer_stowe_cumulative_plot,
+            self.mayer_stowe_incremental_plot,
+            self.mayer_pressure_plot,
+            self.pore_structure_percent_plot,
+            self.pore_structure_pressure_plot,
+        )
 
     def _apply_active_sample_curve_selection(self) -> None:
         sample_index = self.active_index if 0 <= self.active_index < len(self.results) else None
         set_sample_curve_selected_plots(sample_index, *self._sample_hover_plots())
+        if 0 <= self._hovered_sample_row < len(self.results):
+            set_sample_curve_hover_plots(self._hovered_sample_row, *self._sample_hover_plots())
 
     def _on_sample_table_row_hovered(self, row: int) -> None:
         sample_index = int(row) if 0 <= int(row) < len(self.results) else None
@@ -2198,42 +3205,67 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         was_updating = self._updating_sample_checks
-        previous_block = self.sample_list.blockSignals(True)
         self._updating_sample_checks = True
         try:
-            for column in range(self.sample_list.columnCount()):
-                if column == VISIBLE_COLUMN:
-                    continue
-                item = self.sample_list.item(row, column)
-                if item is None:
-                    continue
-                if hovered:
-                    if not isinstance(item.data(HOVER_BASE_FONT_ROLE), QtGui.QFont):
-                        item.setData(HOVER_BASE_FONT_ROLE, QtGui.QFont(item.font()))
-                    if not isinstance(item.data(HOVER_BASE_FOREGROUND_ROLE), QtGui.QBrush):
-                        item.setData(HOVER_BASE_FOREGROUND_ROLE, QtGui.QBrush(item.foreground()))
-                    font = QtGui.QFont(item.font())
-                    font.setBold(True)
-                    item.setFont(font)
-                    item.setForeground(QtGui.QBrush(QtGui.QColor("#111827")))
-                    continue
-
-                base_font = item.data(HOVER_BASE_FONT_ROLE)
-                base_foreground = item.data(HOVER_BASE_FOREGROUND_ROLE)
-                if isinstance(base_font, QtGui.QFont):
-                    item.setFont(QtGui.QFont(base_font))
-                    item.setData(HOVER_BASE_FONT_ROLE, None)
-                if isinstance(base_foreground, QtGui.QBrush):
-                    item.setForeground(QtGui.QBrush(base_foreground))
-                    item.setData(HOVER_BASE_FOREGROUND_ROLE, None)
+            for table, columns in (
+                (self.sample_list, range(1, self.sample_list.columnCount())),
+                (self.selected_pore_volume_table, range(self.selected_pore_volume_table.columnCount())),
+                (self.pore_structure_summary_table, range(self.pore_structure_summary_table.columnCount())),
+            ):
+                previous_block = table.blockSignals(True)
+                try:
+                    for column in columns:
+                        item = table.item(row, column)
+                        if item is not None:
+                            self._set_sample_item_hover(item, hovered)
+                finally:
+                    table.blockSignals(previous_block)
+                table.viewport().update()
+                if hasattr(table, "_frozen_table"):
+                    table._frozen_table.viewport().update()
         finally:
             self._updating_sample_checks = was_updating
-            self.sample_list.blockSignals(previous_block)
-        self.sample_list.viewport().update()
+
+    @staticmethod
+    def _set_sample_item_hover(item, hovered: bool) -> None:
+        if hovered:
+            if not isinstance(item.data(HOVER_BASE_FONT_ROLE), QtGui.QFont):
+                item.setData(HOVER_BASE_FONT_ROLE, QtGui.QFont(item.font()))
+            if not isinstance(item.data(HOVER_BASE_FOREGROUND_ROLE), QtGui.QBrush):
+                item.setData(HOVER_BASE_FOREGROUND_ROLE, QtGui.QBrush(item.foreground()))
+            font = QtGui.QFont(item.font())
+            font.setBold(True)
+            item.setFont(font)
+            item.setForeground(QtGui.QBrush(QtGui.QColor("#111827")))
+        else:
+            base_font = item.data(HOVER_BASE_FONT_ROLE)
+            base_foreground = item.data(HOVER_BASE_FOREGROUND_ROLE)
+            if isinstance(base_font, QtGui.QFont):
+                item.setFont(QtGui.QFont(base_font))
+                item.setData(HOVER_BASE_FONT_ROLE, None)
+            if isinstance(base_foreground, QtGui.QBrush):
+                item.setForeground(QtGui.QBrush(base_foreground))
+                item.setData(HOVER_BASE_FOREGROUND_ROLE, None)
 
     def on_sample_item_clicked(self, item: QtWidgets.QTableWidgetItem) -> None:
         if item.column() in (ANGLE_COLUMN, TENSION_COLUMN):
+            row = item.row()
+            column = item.column()
+            QtCore.QTimer.singleShot(0, lambda: self._begin_sample_parameter_edit(row, column))
+
+    def _begin_sample_parameter_edit(self, row: int, column: int) -> None:
+        item = self.sample_list.item(row, column)
+        if item is not None and column in (ANGLE_COLUMN, TENSION_COLUMN):
+            self.sample_list.setCurrentItem(item)
             self.sample_list.editItem(item)
+            QtCore.QTimer.singleShot(0, self._clear_parameter_editor_selection)
+            QtCore.QTimer.singleShot(5, self._clear_parameter_editor_selection)
+
+    @staticmethod
+    def _clear_parameter_editor_selection() -> None:
+        editor = QtWidgets.QApplication.focusWidget()
+        if isinstance(editor, QtWidgets.QDoubleSpinBox):
+            editor.lineEdit().deselect()
 
     def on_sample_item_changed(self, item: QtWidgets.QTableWidgetItem) -> None:
         if self._updating_sample_checks:
@@ -2242,8 +3274,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if item.column() == VISIBLE_COLUMN:
             checked = _check_state_value(item.checkState()) == _check_state_value(QtCore.Qt.Checked)
             self.on_visibility_changed(index, checked)
-        elif item.column() in (ANGLE_COLUMN, TENSION_COLUMN):
-            self.on_sample_parameter_changed(index, item.column())
 
     def on_visibility_changed(self, index: int, checked: bool) -> None:
         if not (0 <= index < len(self.visible_results)):
@@ -2259,36 +3289,84 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             theta = self._parameter_value_from_cell(index, ANGLE_COLUMN)
             gamma = self._parameter_value_from_cell(index, TENSION_COLUMN)
-            self._validate_calculation_parameters(theta, gamma)
         except ValueError as exc:
             self._restore_parameter_cells(index)
             self.statusBar().showMessage(str(exc), 5000)
             return
 
+        self._apply_sample_parameters(index, theta, gamma)
+
+    def on_sample_parameter_committed(self, index: int, column: int, value: float) -> None:
+        if not (0 <= index < len(self.results)) or column not in (ANGLE_COLUMN, TENSION_COLUMN):
+            return
+        metadata = self.results[index].metadata
+        theta = float(value) if column == ANGLE_COLUMN else float(metadata.get("adv_contact_angle_deg"))
+        gamma = float(value) if column == TENSION_COLUMN else float(metadata.get("surface_tension_dynes_cm"))
+        self._apply_sample_parameters(index, theta, gamma)
+
+    def _calculate_sample_with_parameters(self, index: int, theta: float, gamma: float):
+        self._validate_calculation_parameters(theta, gamma)
+
         raw_smp = self.results[index].raw_smp
         if raw_smp is None:
-            self.statusBar().showMessage("无法重新计算：原始 SMP 数据不可用。", 5000)
-            return
+            raise ValueError("无法重新计算：原始 SMP 数据不可用。")
 
         theta_override = None if np.isclose(theta, raw_smp.adv_contact_angle_deg) else theta
         gamma_override = None if np.isclose(gamma, raw_smp.surface_tension_dynes_cm) else gamma
 
+        return calculate_microactive(
+            raw_smp,
+            adv_contact_angle_deg=theta_override,
+            surface_tension_dynes_cm=gamma_override,
+        )
+
+    def _replace_sample_result(self, index: int, updated) -> None:
+        previous_result = self.results[index]
+        previous_pore_options = self.pore_structure_options.pop(id(previous_result), None)
+        self.results[index] = updated
+        if previous_pore_options is not None:
+            self.pore_structure_options[id(updated)] = previous_pore_options
+        if index == self.active_index:
+            self.result = updated
+
+    def _apply_sample_parameters(self, index: int, theta: float, gamma: float) -> None:
+        if not (0 <= index < len(self.results)):
+            return
+
         try:
-            updated = calculate_microactive(
-                raw_smp,
-                adv_contact_angle_deg=theta_override,
-                surface_tension_dynes_cm=gamma_override,
-            )
+            updated = self._calculate_sample_with_parameters(index, theta, gamma)
         except Exception as exc:
             self._restore_parameter_cells(index)
             self.statusBar().showMessage(f"重新计算失败：{exc}", 5000)
             return
 
-        self.results[index] = updated
-        if index == self.active_index:
-            self.result = updated
+        self._replace_sample_result(index, updated)
         self._restore_parameter_cells(index)
         self._refresh_visibility_dependent_ui()
+
+    def apply_sample_parameter_to_all(self, source_index: int, column: int) -> None:
+        if not (0 <= source_index < len(self.results)) or column not in (ANGLE_COLUMN, TENSION_COLUMN):
+            return
+
+        source_metadata = self.results[source_index].metadata
+        value_key = "adv_contact_angle_deg" if column == ANGLE_COLUMN else "surface_tension_dynes_cm"
+        target_value = float(source_metadata.get(value_key))
+        updated_results = []
+        try:
+            for index, result in enumerate(self.results):
+                theta = target_value if column == ANGLE_COLUMN else float(result.metadata.get("adv_contact_angle_deg"))
+                gamma = target_value if column == TENSION_COLUMN else float(result.metadata.get("surface_tension_dynes_cm"))
+                updated_results.append(self._calculate_sample_with_parameters(index, theta, gamma))
+        except Exception as exc:
+            self.statusBar().showMessage(f"应用到全部样品失败：{exc}", 5000)
+            return
+
+        for index, updated in enumerate(updated_results):
+            self._replace_sample_result(index, updated)
+            self._restore_parameter_cells(index)
+        self._refresh_visibility_dependent_ui()
+        label = "接触角" if column == ANGLE_COLUMN else "表面张力"
+        self.statusBar().showMessage(f"已将{label}应用到全部 {len(updated_results)} 个样品。", 5000)
 
     def _parameter_value_from_cell(self, row: int, column: int) -> float:
         item = self.sample_list.item(row, column)
@@ -2349,7 +3427,8 @@ class MainWindow(QtWidgets.QMainWindow):
         item = self.sample_list.item(row, column)
         if item is None:
             return
-        item.setText(self._format_parameter_value(value, suffix))
+        item.setText(self._format_parameter_value(value, ""))
+        item.setData(PARAMETER_VALUE_ROLE, value)
         item.setForeground(QtGui.QBrush(QtGui.QColor("#111827" if is_override else "#9ca3af")))
 
     def on_select_all_changed(self, state: int) -> None:
@@ -2384,17 +3463,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self._updating_sample_checks = False
 
     def _refresh_visibility_dependent_ui(self) -> None:
-        raw_region = None
-        if self.region is not None:
-            raw_region = self._region_to_pressure_values(*self.region.getRegion())
+        raw_region = self._current_pressure_region()
+        mayer_region = self._current_mayer_pressure_region()
         self._remove_region()
         self._redraw_plots()
         self._add_distribution_selection_items()
-        if raw_region is not None:
-            pressure = self._all_pressure_values()
-            if pressure.size:
-                self._add_pressure_region(raw_region, pressure)
+        pressure = self._all_pressure_values()
+        if pressure.size:
+            if raw_region is None:
+                raw_region = list(DEFAULT_PRESSURE_REGION)
+            if mayer_region is None:
+                mayer_region = list(DEFAULT_MAYER_STOWE_PRESSURE_REGION)
+            self._add_pressure_region(raw_region, pressure)
+            self._add_mayer_pressure_region(mayer_region, pressure)
         self.update_metrics()
+        self.update_mayer_stowe()
 
     def _all_pressure_values(self) -> np.ndarray:
         arrays = [
@@ -2412,10 +3495,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return [lo + span * 0.25, lo + span * 0.55]
 
     def _default_pressure_region_for_active_result(self, pressure: np.ndarray) -> list[float]:
-        default_from_diameter = self._default_pressure_region_from_diameter_range()
-        if default_from_diameter is not None:
-            return self._clamp_pressure_region(default_from_diameter, pressure)
-        return self._default_pressure_region(pressure)
+        return self._clamp_pressure_region(list(DEFAULT_PRESSURE_REGION), pressure)
 
     def _default_pressure_region_from_diameter_range(self) -> list[float] | None:
         if self.result is None:
@@ -2482,67 +3562,246 @@ class MainWindow(QtWidgets.QMainWindow):
             line.setCursor(QtCore.Qt.SizeHorCursor)
 
     def _add_pressure_region(self, raw_region: list[float], pressure: np.ndarray) -> None:
+        self._add_pressure_region_for(raw_region, pressure, mayer=False)
+
+    def _add_mayer_pressure_region(self, raw_region: list[float], pressure: np.ndarray) -> None:
+        self._add_pressure_region_for(raw_region, pressure, mayer=True)
+
+    def _add_pressure_region_for(
+        self,
+        raw_region: list[float],
+        pressure: np.ndarray,
+        *,
+        mayer: bool,
+    ) -> None:
         if pressure.size == 0:
             return
         raw_region = self._clamp_pressure_region(raw_region, pressure)
-        self.pressure_region_is_log = self._pressure_log_enabled()
-        self.region = self._make_selection_region(
-            self._pressure_to_region_values(raw_region[0], raw_region[1]),
-            bounds=self._pressure_to_region_values(np.nanmin(pressure), np.nanmax(pressure)),
+        is_log = self._pressure_log_enabled_for(mayer)
+        if mayer:
+            self.mayer_pressure_region_is_log = is_log
+        else:
+            self.pressure_region_is_log = is_log
+        region = self._make_selection_region(
+            self._pressure_to_region_values_for(raw_region[0], raw_region[1], mayer=mayer),
+            bounds=self._pressure_to_region_values_for(
+                np.nanmin(pressure),
+                np.nanmax(pressure),
+                mayer=mayer,
+            ),
             movable=True,
         )
-        self.region.sigRegionChanged.connect(self.on_pressure_region_changed)
-        self.pressure_plot.addItem(self.region, ignoreBounds=True)
+        changed_callback = self.on_mayer_pressure_region_changed if mayer else self.on_pressure_region_changed
+        label_callback = (
+            self._on_mayer_pressure_region_label_changed
+            if mayer
+            else self._on_pressure_region_label_changed
+        )
+        finished_callback = (
+            self._on_mayer_pressure_region_change_finished
+            if mayer
+            else self._on_pressure_region_change_finished
+        )
+        region.sigRegionChanged.connect(changed_callback)
+        region.sigRegionChanged.connect(label_callback)
+        finished_signal = getattr(region, "sigRegionChangeFinished", None)
+        if finished_signal is not None:
+            finished_signal.connect(finished_callback)
+        plot = self.mayer_pressure_plot if mayer else self.pressure_plot
+        plot.addItem(region, ignoreBounds=True)
+        labels = [
+            RegionEndpointLabel(
+                0,
+                self._begin_mayer_pressure_region_endpoint_edit
+                if mayer
+                else self._begin_pressure_region_endpoint_edit,
+                line_color=REGION_LINE_COLOR,
+                text_color="#1e3a8a",
+            ),
+            RegionEndpointLabel(
+                1,
+                self._begin_mayer_pressure_region_endpoint_edit
+                if mayer
+                else self._begin_pressure_region_endpoint_edit,
+                line_color=REGION_LINE_COLOR,
+                text_color="#1e3a8a",
+            ),
+        ]
+        for label in labels:
+            label.hide()
+            plot.addItem(label, ignoreBounds=True)
+        if mayer:
+            self.mayer_pressure_region = region
+            self.mayer_pressure_region_labels = labels
+        else:
+            self.region = region
+            self.pressure_region_labels = labels
+        self._show_pressure_region_labels_for(mayer=mayer, auto_hide=True)
 
     def _remove_region(self) -> None:
-        if self.region is None:
-            self._remove_distribution_selection_items()
-            return
-        try:
-            self.region.sigRegionChanged.disconnect(self.on_pressure_region_changed)
-        except (RuntimeError, TypeError):
-            pass
-        try:
-            self.pressure_plot.removeItem(self.region)
-        except RuntimeError:
-            pass
-        self.region = None
-        self.pressure_region_is_log = False
+        self._remove_pressure_region_for(mayer=False)
+        self._remove_pressure_region_for(mayer=True)
         self._remove_distribution_selection_items()
+
+    def _remove_pressure_region_for(self, *, mayer: bool) -> None:
+        region = self.mayer_pressure_region if mayer else self.region
+        labels = self.mayer_pressure_region_labels if mayer else self.pressure_region_labels
+        plot = self.mayer_pressure_plot if mayer else self.pressure_plot
+        timer = self.mayer_pressure_region_label_timer if mayer else self.pressure_region_label_timer
+        timer.stop()
+        self._hide_pressure_region_editor_for(mayer=mayer)
+        if region is not None:
+            callbacks = (
+                (
+                    self.on_mayer_pressure_region_changed,
+                    self._on_mayer_pressure_region_label_changed,
+                    self._on_mayer_pressure_region_change_finished,
+                )
+                if mayer
+                else (
+                    self.on_pressure_region_changed,
+                    self._on_pressure_region_label_changed,
+                    self._on_pressure_region_change_finished,
+                )
+            )
+            for signal_name, callback in (
+                ("sigRegionChanged", callbacks[0]),
+                ("sigRegionChanged", callbacks[1]),
+                ("sigRegionChangeFinished", callbacks[2]),
+            ):
+                signal = getattr(region, signal_name, None)
+                if signal is not None:
+                    try:
+                        signal.disconnect(callback)
+                    except (RuntimeError, TypeError):
+                        pass
+            try:
+                plot.removeItem(region)
+            except RuntimeError:
+                pass
+        for label in labels:
+            try:
+                plot.removeItem(label)
+            except RuntimeError:
+                pass
+        if mayer:
+            self.mayer_pressure_region = None
+            self.mayer_pressure_region_is_log = False
+            self.mayer_pressure_region_labels = []
+        else:
+            self.region = None
+            self.pressure_region_is_log = False
+            self.pressure_region_labels = []
 
     def on_pressure_region_changed(self) -> None:
         if self._syncing_region_changes:
             return
         self.queue_metrics_update()
 
-    def on_pressure_log_changed(self) -> None:
-        if not self.results or self.region is None:
+    def on_mayer_pressure_region_changed(self) -> None:
+        if self._syncing_region_changes:
             return
-        raw_lo, raw_hi = self._region_to_pressure_values(*self.region.getRegion())
-        self.pressure_region_is_log = self._pressure_log_enabled()
+        self.queue_mayer_stowe_update()
+
+    def _on_pressure_region_label_changed(self) -> None:
+        self._cancel_pressure_region_editor_if_unchanged_for(mayer=False)
+        self._show_pressure_region_labels_for(mayer=False, auto_hide=True)
+
+    def _on_mayer_pressure_region_label_changed(self) -> None:
+        self._cancel_pressure_region_editor_if_unchanged_for(mayer=True)
+        self._show_pressure_region_labels_for(mayer=True, auto_hide=True)
+
+    def _on_pressure_region_change_finished(self) -> None:
+        self._show_pressure_region_labels_for(mayer=False, auto_hide=True)
+
+    def _on_mayer_pressure_region_change_finished(self) -> None:
+        self._show_pressure_region_labels_for(mayer=True, auto_hide=True)
+
+    def _on_pressure_view_range_changed(self, *_args) -> None:
+        if any(self._safe_item_is_visible(label) for label in self.pressure_region_labels):
+            self._update_pressure_region_labels_for(mayer=False)
+
+    def _on_mayer_pressure_view_range_changed(self, *_args) -> None:
+        if any(self._safe_item_is_visible(label) for label in self.mayer_pressure_region_labels):
+            self._update_pressure_region_labels_for(mayer=True)
+
+    def on_pressure_log_changed(self) -> None:
+        self._on_pressure_log_changed_for(mayer=False)
+
+    def on_mayer_pressure_log_changed(self) -> None:
+        self._on_pressure_log_changed_for(mayer=True)
+
+    def _on_pressure_log_changed_for(self, *, mayer: bool) -> None:
+        region = self.mayer_pressure_region if mayer else self.region
+        if not self.results or region is None:
+            return
+        raw_lo, raw_hi = self._region_to_pressure_values_for(*region.getRegion(), mayer=mayer)
+        if mayer:
+            self.mayer_pressure_region_is_log = self._pressure_log_enabled_for(True)
+        else:
+            self.pressure_region_is_log = self._pressure_log_enabled_for(False)
         pressure = self._all_pressure_values()
         self._syncing_region_changes = True
         try:
             if pressure.size:
-                self.region.setBounds(self._pressure_to_region_values(np.nanmin(pressure), np.nanmax(pressure)))
-            self.region.setRegion(self._pressure_to_region_values(raw_lo, raw_hi))
+                region.setBounds(
+                    self._pressure_to_region_values_for(
+                        np.nanmin(pressure),
+                        np.nanmax(pressure),
+                        mayer=mayer,
+                    )
+                )
+            region.setRegion(self._pressure_to_region_values_for(raw_lo, raw_hi, mayer=mayer))
         finally:
             self._syncing_region_changes = False
-        self.queue_metrics_update()
+        self._show_pressure_region_labels_for(mayer=mayer, auto_hide=True)
+        if mayer:
+            self.queue_mayer_stowe_update()
+        else:
+            self.queue_metrics_update()
 
     def _pressure_log_enabled(self) -> bool:
-        controls = self.pressure_plot.getPlotItem().ctrl
+        return self._pressure_log_enabled_for(False)
+
+    def _pressure_log_enabled_for(self, mayer: bool) -> bool:
+        plot = self.mayer_pressure_plot if mayer else self.pressure_plot
+        controls = plot.getPlotItem().ctrl
         return bool(getattr(controls, "logXCheck").isChecked()) if hasattr(controls, "logXCheck") else False
 
     def _pressure_to_region_values(self, pressure_min: float, pressure_max: float) -> list[float]:
+        return self._pressure_to_region_values_for(pressure_min, pressure_max, mayer=False)
+
+    def _mayer_pressure_to_region_values(self, pressure_min: float, pressure_max: float) -> list[float]:
+        return self._pressure_to_region_values_for(pressure_min, pressure_max, mayer=True)
+
+    def _pressure_to_region_values_for(
+        self,
+        pressure_min: float,
+        pressure_max: float,
+        *,
+        mayer: bool,
+    ) -> list[float]:
         lo, hi = sorted((float(pressure_min), float(pressure_max)))
-        if self._pressure_log_enabled() and lo > 0 and hi > 0:
+        if self._pressure_log_enabled_for(mayer) and lo > 0 and hi > 0:
             return [float(np.log10(lo)), float(np.log10(hi))]
         return [lo, hi]
 
     def _region_to_pressure_values(self, region_min: float, region_max: float) -> list[float]:
+        return self._region_to_pressure_values_for(region_min, region_max, mayer=False)
+
+    def _mayer_region_to_pressure_values(self, region_min: float, region_max: float) -> list[float]:
+        return self._region_to_pressure_values_for(region_min, region_max, mayer=True)
+
+    def _region_to_pressure_values_for(
+        self,
+        region_min: float,
+        region_max: float,
+        *,
+        mayer: bool,
+    ) -> list[float]:
         lo, hi = sorted((float(region_min), float(region_max)))
-        if self.pressure_region_is_log:
+        is_log = self.mayer_pressure_region_is_log if mayer else self.pressure_region_is_log
+        if is_log:
             return [float(10.0**lo), float(10.0**hi)]
         return [lo, hi]
 
@@ -2553,6 +3812,399 @@ class MainWindow(QtWidgets.QMainWindow):
             return self._region_to_pressure_values(*self.region.getRegion())
         except RuntimeError:
             return None
+
+    def _current_mayer_pressure_region(self) -> list[float] | None:
+        if self.mayer_pressure_region is None:
+            return None
+        try:
+            return self._mayer_region_to_pressure_values(*self.mayer_pressure_region.getRegion())
+        except RuntimeError:
+            return None
+
+    def _show_pressure_region_labels_for(self, *, mayer: bool, auto_hide: bool) -> None:
+        if not self._update_pressure_region_labels_for(mayer=mayer):
+            return
+        labels = self.mayer_pressure_region_labels if mayer else self.pressure_region_labels
+        editor = self.mayer_pressure_region_editor if mayer else self.pressure_region_editor
+        editing_index = (
+            self._editing_mayer_pressure_endpoint_index
+            if mayer
+            else self._editing_pressure_endpoint_index
+        )
+        editor_visible = editor is not None and not editor.isHidden()
+        for index, label in enumerate(labels):
+            if editor_visible and editing_index == index:
+                label.hide()
+            else:
+                label.show()
+        editing = self._editing_mayer_pressure_endpoint if mayer else self._editing_pressure_endpoint
+        if auto_hide and not editing:
+            timer = self.mayer_pressure_region_label_timer if mayer else self.pressure_region_label_timer
+            timer.start()
+
+    def _hide_pressure_region_labels(self) -> None:
+        self._hide_pressure_region_labels_for(mayer=False)
+
+    def _hide_mayer_pressure_region_labels(self) -> None:
+        self._hide_pressure_region_labels_for(mayer=True)
+
+    def _hide_pressure_region_labels_for(self, *, mayer: bool) -> None:
+        labels = self.mayer_pressure_region_labels if mayer else self.pressure_region_labels
+        for label in labels:
+            try:
+                label.hide()
+            except RuntimeError:
+                pass
+
+    def _update_pressure_region_labels_for(self, *, mayer: bool) -> bool:
+        region = self.mayer_pressure_region if mayer else self.region
+        labels = self.mayer_pressure_region_labels if mayer else self.pressure_region_labels
+        plot = self.mayer_pressure_plot if mayer else self.pressure_plot
+        if region is None or len(labels) < 2 or not region.isVisible():
+            self._hide_pressure_region_labels_for(mayer=mayer)
+            return False
+        try:
+            region_values = sorted(float(value) for value in region.getRegion())
+            pressure_values = self._region_to_pressure_values_for(
+                region_values[0],
+                region_values[1],
+                mayer=mayer,
+            )
+            view_range = plot.getPlotItem().getViewBox().viewRange()
+        except RuntimeError:
+            self._hide_pressure_region_labels_for(mayer=mayer)
+            return False
+        if not view_range or len(view_range) != 2:
+            self._hide_pressure_region_labels_for(mayer=mayer)
+            return False
+        (x_min, x_max), (y_min, y_max) = view_range
+        if not np.isfinite(y_min) or not np.isfinite(y_max):
+            self._hide_pressure_region_labels_for(mayer=mayer)
+            return False
+        y_position = min(float(y_min), float(y_max))
+        editor = self.mayer_pressure_region_editor if mayer else self.pressure_region_editor
+        editing_index = (
+            self._editing_mayer_pressure_endpoint_index
+            if mayer
+            else self._editing_pressure_endpoint_index
+        )
+        editor_dirty = (
+            self._mayer_pressure_endpoint_editor_dirty
+            if mayer
+            else self._pressure_endpoint_editor_dirty
+        )
+        editor_visible = editor is not None and not editor.isHidden()
+        for label_index, (label, x_position, pressure_value) in enumerate(
+            zip(labels, region_values, pressure_values)
+        ):
+            label.setText(self._format_axis_number(pressure_value))
+            anchor_x, pixel_offset = self._region_label_anchor(
+                plot,
+                label,
+                label_index,
+                float(x_position),
+                (float(x_min), float(x_max)),
+            )
+            label.setAnchor((anchor_x, 1.0))
+            label_x = self._view_x_with_pixel_offset_for(plot, float(x_position), pixel_offset)
+            label.setPos(label_x, y_position)
+            if editor_visible and editing_index == label_index:
+                if not editor_dirty:
+                    self._set_pressure_region_editor_text_for(
+                        self._format_axis_number(pressure_value),
+                        mayer=mayer,
+                    )
+                self._position_pressure_region_editor_for(
+                    label_x,
+                    y_position,
+                    anchor_x,
+                    label,
+                    mayer=mayer,
+                )
+        return True
+
+    @staticmethod
+    def _region_label_anchor(plot, label, label_index: int, x_position: float, x_range) -> tuple[float, float]:
+        view_box = plot.getPlotItem().getViewBox()
+        try:
+            scene_rect = view_box.sceneBoundingRect()
+            scene_x = float(view_box.mapViewToScene(QtCore.QPointF(float(x_position), 0.0)).x())
+            label_width = max(28.0, float(label.boundingRect().width()))
+        except Exception:
+            x_min, x_max = sorted(x_range)
+            span = max(abs(x_max - x_min), 1e-12)
+            at_left_edge = float(x_position) - x_min < span * 0.08
+            at_right_edge = x_max - float(x_position) < span * 0.08
+            if int(label_index) <= 0:
+                return (0.0, 5.0) if at_left_edge else (1.0, -5.0)
+            return (1.0, -5.0) if at_right_edge else (0.0, 5.0)
+        margin = 6.0
+        if int(label_index) <= 0:
+            if scene_x - label_width - margin < scene_rect.left():
+                return 0.0, 5.0
+            return 1.0, -5.0
+        if scene_x + label_width + margin > scene_rect.right():
+            return 1.0, -5.0
+        return 0.0, 5.0
+
+    @staticmethod
+    def _view_x_with_pixel_offset_for(plot, x_position: float, pixel_offset: float) -> float:
+        view_box = plot.getPlotItem().getViewBox()
+        try:
+            scene_pos = view_box.mapViewToScene(QtCore.QPointF(float(x_position), 0.0))
+            shifted = QtCore.QPointF(scene_pos.x() + float(pixel_offset), scene_pos.y())
+            return float(view_box.mapSceneToView(shifted).x())
+        except Exception:
+            return float(x_position)
+
+    def _ensure_pressure_region_editor_for(self, *, mayer: bool) -> RegionEndpointLineEdit:
+        editor = self.mayer_pressure_region_editor if mayer else self.pressure_region_editor
+        if editor is not None:
+            return editor
+        plot = self.mayer_pressure_plot if mayer else self.pressure_plot
+        editor = RegionEndpointLineEdit(plot, line_color=REGION_LINE_COLOR, text_color="#1e3a8a")
+        if mayer:
+            editor.cancel_requested = self._cancel_mayer_pressure_region_endpoint_edit
+            editor.textEdited.connect(self._mark_mayer_pressure_region_editor_dirty)
+            editor.editingFinished.connect(self._finish_mayer_pressure_region_endpoint_edit)
+            self.mayer_pressure_region_editor = editor
+        else:
+            editor.cancel_requested = self._cancel_pressure_region_endpoint_edit
+            editor.textEdited.connect(self._mark_pressure_region_editor_dirty)
+            editor.editingFinished.connect(self._finish_pressure_region_endpoint_edit)
+            self.pressure_region_editor = editor
+        editor.hide()
+        return editor
+
+    def _mark_pressure_region_editor_dirty(self, _text: str) -> None:
+        self._pressure_endpoint_editor_dirty = True
+
+    def _mark_mayer_pressure_region_editor_dirty(self, _text: str) -> None:
+        self._mayer_pressure_endpoint_editor_dirty = True
+
+    def _set_pressure_region_editor_text_for(self, text: str, *, mayer: bool) -> None:
+        editor = self.mayer_pressure_region_editor if mayer else self.pressure_region_editor
+        if editor is None:
+            return
+        was_blocked = editor.blockSignals(True)
+        try:
+            editor.setText(text)
+        finally:
+            editor.blockSignals(was_blocked)
+
+    def _position_pressure_region_editor_for(
+        self,
+        x_position: float,
+        y_position: float,
+        anchor_x: float,
+        label,
+        *,
+        mayer: bool,
+    ) -> None:
+        editor = self.mayer_pressure_region_editor if mayer else self.pressure_region_editor
+        plot = self.mayer_pressure_plot if mayer else self.pressure_plot
+        self._position_region_editor(plot, editor, label)
+
+    @staticmethod
+    def _position_region_editor(plot, editor, label) -> None:
+        if editor is None:
+            return
+        try:
+            rect = label.sceneBoundingRect()
+            top_left = plot.mapFromScene(rect.topLeft())
+            bottom_right = plot.mapFromScene(rect.bottomRight())
+            if hasattr(top_left, "toPoint"):
+                top_left = top_left.toPoint()
+            if hasattr(bottom_right, "toPoint"):
+                bottom_right = bottom_right.toPoint()
+            x1, y1 = int(top_left.x()), int(top_left.y())
+            x2, y2 = int(bottom_right.x()), int(bottom_right.y())
+            left = min(x1, x2)
+            top = min(y1, y2)
+            width = max(28, abs(x2 - x1))
+            height = max(20, abs(y2 - y1))
+            editor.setFixedSize(width, height)
+            left = max(4, min(left, max(4, plot.width() - width - 4)))
+            top = max(4, min(top, max(4, plot.height() - height - 4)))
+            editor.move(left, top)
+        except Exception:
+            pass
+
+    def _begin_pressure_region_endpoint_edit(self, endpoint_index: int) -> None:
+        self._begin_pressure_region_endpoint_edit_for(endpoint_index, mayer=False)
+
+    def _begin_mayer_pressure_region_endpoint_edit(self, endpoint_index: int) -> None:
+        self._begin_pressure_region_endpoint_edit_for(endpoint_index, mayer=True)
+
+    def _begin_pressure_region_endpoint_edit_for(self, endpoint_index: int, *, mayer: bool) -> None:
+        values = self._current_mayer_pressure_region() if mayer else self._current_pressure_region()
+        if values is None:
+            return
+        index = 0 if int(endpoint_index) <= 0 else 1
+        editor = self._ensure_pressure_region_editor_for(mayer=mayer)
+        if mayer:
+            self._editing_mayer_pressure_endpoint_index = index
+            self._mayer_pressure_endpoint_editor_dirty = False
+            self._editing_mayer_pressure_endpoint = True
+            self.mayer_pressure_region_label_timer.stop()
+        else:
+            self._editing_pressure_endpoint_index = index
+            self._pressure_endpoint_editor_dirty = False
+            self._editing_pressure_endpoint = True
+            self.pressure_region_label_timer.stop()
+        self._set_pressure_region_editor_text_for(self._format_axis_number(values[index]), mayer=mayer)
+        editor.show()
+        editor.raise_()
+        self._show_pressure_region_labels_for(mayer=mayer, auto_hide=False)
+        labels = self.mayer_pressure_region_labels if mayer else self.pressure_region_labels
+        if index < len(labels):
+            try:
+                editor.setFont(labels[index].textItem.font())
+            except Exception:
+                pass
+            labels[index].hide()
+        editor.setFocus(QtCore.Qt.MouseFocusReason)
+        editor.selectAll()
+
+    def _finish_pressure_region_endpoint_edit(self) -> None:
+        self._finish_pressure_region_endpoint_edit_for(mayer=False)
+
+    def _finish_mayer_pressure_region_endpoint_edit(self) -> None:
+        self._finish_pressure_region_endpoint_edit_for(mayer=True)
+
+    def _finish_pressure_region_endpoint_edit_for(self, *, mayer: bool) -> None:
+        finishing = (
+            self._mayer_pressure_endpoint_editor_finishing
+            if mayer
+            else self._pressure_endpoint_editor_finishing
+        )
+        editor = self.mayer_pressure_region_editor if mayer else self.pressure_region_editor
+        if finishing or editor is None or editor.isHidden():
+            return
+        if mayer:
+            self._mayer_pressure_endpoint_editor_finishing = True
+        else:
+            self._pressure_endpoint_editor_finishing = True
+        try:
+            self._commit_pressure_region_endpoint_edit_for(mayer=mayer)
+        finally:
+            if mayer:
+                self._mayer_pressure_endpoint_editor_finishing = False
+            else:
+                self._pressure_endpoint_editor_finishing = False
+
+    def _commit_pressure_region_endpoint_edit_for(self, *, mayer: bool) -> None:
+        editor = self.mayer_pressure_region_editor if mayer else self.pressure_region_editor
+        endpoint_index = (
+            self._editing_mayer_pressure_endpoint_index
+            if mayer
+            else self._editing_pressure_endpoint_index
+        )
+        dirty = self._mayer_pressure_endpoint_editor_dirty if mayer else self._pressure_endpoint_editor_dirty
+        region = self.mayer_pressure_region if mayer else self.region
+        values = self._current_mayer_pressure_region() if mayer else self._current_pressure_region()
+        if editor is None or endpoint_index is None or region is None or values is None:
+            self._hide_pressure_region_editor_for(mayer=mayer)
+            return
+        text = editor.text().strip()
+        if not text or not dirty:
+            self._cancel_pressure_region_endpoint_edit_for(mayer=mayer)
+            return
+        pressure = self._all_pressure_values()
+        if pressure.size == 0:
+            self._cancel_pressure_region_endpoint_edit_for(mayer=mayer)
+            return
+        lower_bound = float(np.nanmin(pressure))
+        upper_bound = float(np.nanmax(pressure))
+        try:
+            new_value = float(text.replace(",", ""))
+        except ValueError:
+            self.statusBar().showMessage("压力边界必须是数字。", 4000)
+            editor.selectAll()
+            QtCore.QTimer.singleShot(0, lambda editor=editor: editor.setFocus(QtCore.Qt.OtherFocusReason))
+            return
+        span = max(abs(upper_bound - lower_bound), abs(values[1]), 1.0)
+        epsilon = span * 1e-9
+        if endpoint_index == 0:
+            new_value = max(lower_bound, min(float(new_value), values[1] - epsilon))
+            if new_value >= values[1]:
+                self.statusBar().showMessage("左侧压力边界必须小于右侧边界。", 4000)
+                return
+            values[0] = new_value
+        else:
+            new_value = min(upper_bound, max(float(new_value), values[0] + epsilon))
+            if new_value <= values[0]:
+                self.statusBar().showMessage("右侧压力边界必须大于左侧边界。", 4000)
+                return
+            values[1] = new_value
+        self._hide_pressure_region_editor_for(mayer=mayer)
+        try:
+            region.setRegion(self._pressure_to_region_values_for(values[0], values[1], mayer=mayer))
+        except RuntimeError:
+            return
+        self._show_pressure_region_labels_for(mayer=mayer, auto_hide=True)
+
+    def _cancel_pressure_region_endpoint_edit(self) -> None:
+        self._cancel_pressure_region_endpoint_edit_for(mayer=False)
+
+    def _cancel_mayer_pressure_region_endpoint_edit(self) -> None:
+        self._cancel_pressure_region_endpoint_edit_for(mayer=True)
+
+    def _cancel_pressure_region_endpoint_edit_for(self, *, mayer: bool) -> None:
+        self._hide_pressure_region_editor_for(mayer=mayer)
+        self._show_pressure_region_labels_for(mayer=mayer, auto_hide=True)
+
+    def _cancel_pressure_region_editor_if_unchanged_for(self, *, mayer: bool) -> None:
+        editor = self.mayer_pressure_region_editor if mayer else self.pressure_region_editor
+        dirty = self._mayer_pressure_endpoint_editor_dirty if mayer else self._pressure_endpoint_editor_dirty
+        if editor is None or editor.isHidden() or dirty:
+            return
+        self._hide_pressure_region_editor_for(mayer=mayer)
+
+    def _hide_pressure_region_editor_for(self, *, mayer: bool) -> None:
+        editor = self.mayer_pressure_region_editor if mayer else self.pressure_region_editor
+        if editor is not None:
+            try:
+                editor.hide()
+                editor.clearFocus()
+            except RuntimeError:
+                pass
+        if mayer:
+            self._editing_mayer_pressure_endpoint = False
+            self._editing_mayer_pressure_endpoint_index = None
+            self._mayer_pressure_endpoint_editor_dirty = False
+        else:
+            self._editing_pressure_endpoint = False
+            self._editing_pressure_endpoint_index = None
+            self._pressure_endpoint_editor_dirty = False
+
+    def _ignore_pressure_coordinate_click(self, scene_pos: QtCore.QPointF) -> bool:
+        return self._ignore_pressure_coordinate_click_for(scene_pos, mayer=False)
+
+    def _ignore_mayer_pressure_coordinate_click(self, scene_pos: QtCore.QPointF) -> bool:
+        return self._ignore_pressure_coordinate_click_for(scene_pos, mayer=True)
+
+    def _ignore_pressure_coordinate_click_for(self, scene_pos: QtCore.QPointF, *, mayer: bool) -> bool:
+        editing = self._editing_mayer_pressure_endpoint if mayer else self._editing_pressure_endpoint
+        editor = self.mayer_pressure_region_editor if mayer else self.pressure_region_editor
+        labels = self.mayer_pressure_region_labels if mayer else self.pressure_region_labels
+        plot = self.mayer_pressure_plot if mayer else self.pressure_plot
+        if editing:
+            return True
+        if editor is not None:
+            try:
+                plot_pos = plot.mapFromScene(scene_pos)
+                if (not editor.isHidden()) and editor.geometry().adjusted(-3, -3, 3, 3).contains(plot_pos):
+                    return True
+            except RuntimeError:
+                pass
+        for label in labels:
+            try:
+                if label.isVisible() and label.sceneBoundingRect().adjusted(-4.0, -4.0, 4.0, 4.0).contains(scene_pos):
+                    return True
+            except RuntimeError:
+                continue
+        return False
 
     def _add_distribution_selection_items(self) -> None:
         self.distribution_region_is_log = self._distribution_log_enabled()
@@ -3152,6 +4804,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._metrics_pending = True
         QtCore.QTimer.singleShot(25, self.update_metrics)
 
+    def queue_mayer_stowe_update(self) -> None:
+        if self._mayer_metrics_pending:
+            return
+        self._mayer_metrics_pending = True
+        QtCore.QTimer.singleShot(25, self.update_mayer_stowe)
+
     def update_metrics(self) -> None:
         self._metrics_pending = False
         if not self.results or self.region is None:
@@ -3165,13 +4823,192 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_all_metric_tables(lo, hi)
         self._update_distribution_selection(lo, hi)
 
+    def update_mayer_stowe(self) -> None:
+        self._mayer_metrics_pending = False
+        if not self.results or self.mayer_pressure_region is None:
+            self._clear_mayer_stowe()
+            return
+        try:
+            lo, hi = self._mayer_region_to_pressure_values(*self.mayer_pressure_region.getRegion())
+        except RuntimeError:
+            return
+        self._refresh_mayer_stowe(lo, hi)
+
+    def update_pore_structure(self, *, refresh_pressure_plot: bool = True) -> None:
+        self._pore_structure_update_timer.stop()
+        area = (
+            summary_metrics(self.results[self.active_index]).total_pore_area
+            if 0 <= self.active_index < len(self.results)
+            else float("nan")
+        )
+        self._show_pore_calculated_surface_area(area)
+        pressure_values = self._all_pressure_values()
+        pressure_region = self._current_pore_structure_pressure_region()
+        if refresh_pressure_plot:
+            self.pore_pressure_endpoints.detach()
+        if not self.results or pressure_values.size == 0:
+            if not refresh_pressure_plot:
+                self.pore_pressure_endpoints.detach()
+            self.pore_structure_results = []
+            plot_cumulative_percent_multi(
+                self.pore_structure_percent_plot, [], [], self.sample_colors, None
+            )
+            plot_pressure_volume_multi(
+                self.pore_structure_pressure_plot, [], [], self.sample_colors
+            )
+            self.pore_structure_pressure_region = None
+            self._refresh_pore_structure_summary_table()
+            return
+
+        if pressure_region is None:
+            pressure_region = self._clamp_pressure_region(
+                list(DEFAULT_PORE_STRUCTURE_PRESSURE_REGION), pressure_values
+            )
+        pressure_min, pressure_max = pressure_region
+        self.pore_structure_results = [
+            calculate_pore_structure(
+                result,
+                self._pore_options_for_result(result),
+                pressure_min=pressure_min,
+                pressure_max=pressure_max,
+            )
+            for result in self.results
+        ]
+        plot_cumulative_percent_multi(
+            self.pore_structure_percent_plot,
+            self.pore_structure_results,
+            self.visible_results,
+            self.sample_colors,
+            self.active_index if self.results else None,
+        )
+        # During a drag, preserve the lower plot, region, and endpoint editors:
+        # rebuilding them would remove the item currently holding the mouse.
+        if refresh_pressure_plot:
+            plot_pressure_volume_multi(
+                self.pore_structure_pressure_plot,
+                self.results,
+                self.visible_results,
+                self.sample_colors,
+            )
+            self.pore_structure_pressure_region = None
+            self._add_pore_structure_pressure_region(pressure_region, pressure_values)
+        self._refresh_pore_structure_summary_table()
+        self._apply_active_sample_curve_selection()
+
+    def _current_pore_structure_pressure_region(self) -> list[float] | None:
+        if self.pore_structure_pressure_region is None:
+            return None
+        try:
+            left, right = self.pore_structure_pressure_region.getRegion()
+        except RuntimeError:
+            return None
+        return sorted([10.0 ** float(left), 10.0 ** float(right)])
+
+    def _add_pore_structure_pressure_region(
+        self,
+        values: list[float] | tuple[float, float],
+        pressure_values: np.ndarray,
+    ) -> None:
+        lo, hi = self._clamp_pressure_region(list(values), pressure_values)
+        lower_bound = float(np.nanmin(pressure_values))
+        upper_bound = float(np.nanmax(pressure_values))
+        region = self._make_selection_region(
+            [float(np.log10(lo)), float(np.log10(hi))],
+            bounds=[float(np.log10(lower_bound)), float(np.log10(upper_bound))],
+            movable=True,
+        )
+        region.setZValue(9000)
+        region.sigRegionChanged.connect(self.queue_pore_structure_update)
+        region.sigRegionChangeFinished.connect(self.queue_pore_structure_update)
+        self.pore_structure_pressure_plot.addItem(region, ignoreBounds=True)
+        self.pore_structure_pressure_region = region
+        self.pore_pressure_endpoints.attach(region, pressure_values)
+
+    def queue_pore_structure_update(self) -> None:
+        # Coalesce rapid moves without postponing updates until the drag ends.
+        if not self._pore_structure_update_timer.isActive():
+            self._pore_structure_update_timer.start()
+
+    def _update_pore_structure_selection(self) -> None:
+        if self.pore_structure_pressure_region is not None:
+            self.update_pore_structure(refresh_pressure_plot=False)
+
+    def _refresh_pore_structure_summary_table(self) -> None:
+        table = self.pore_structure_summary_table
+        table.setRowCount(len(self.results))
+        for row, result in enumerate(self.results):
+            name_item = QtWidgets.QTableWidgetItem(self._sample_row_label(result))
+            name_item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable)
+            table.setItem(row, 0, name_item)
+            if row < len(self.pore_structure_results):
+                analysis = self.pore_structure_results[row]
+                values = [
+                    (analysis.permeability_md, 4),
+                    (analysis.threshold_pressure_psia, 2),
+                    (analysis.characteristic_length_nm, 2),
+                    (analysis.conductivity_formation_factor, 4),
+                    (analysis.tortuosity_factor, 4),
+                    (analysis.tortuosity, 4),
+                ]
+            else:
+                values = [(float("nan"), 4)] * 6
+            summary = summary_metrics(result)
+            values = [
+                (summary.total_pore_area, 4),
+                (summary.bulk_density, 4),
+                (summary.apparent_density, 4),
+            ] + values
+            for column, (value, digits) in enumerate(values, start=1):
+                text = f"{value:.{digits}f}" if np.isfinite(value) else "—"
+                item = NumericTableWidgetItem(text, value)
+                item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable)
+                item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+                table.setItem(row, column, item)
+            table.setRowHeight(row, 28)
+        if self.pore_structure_sort_column >= 0 and table.rowCount() > 1:
+            order = (
+                QtCore.Qt.AscendingOrder
+                if self.pore_structure_sort_ascending
+                else QtCore.Qt.DescendingOrder
+            )
+            table.sortItems(self.pore_structure_sort_column, order)
+        self._apply_sample_row_hover(self._hovered_sample_row, True)
+
+    def _clear_mayer_stowe(self) -> None:
+        self.mayer_stowe_results = []
+        plot_mayer_stowe_multi(
+            self.mayer_stowe_cumulative_plot,
+            self.mayer_stowe_incremental_plot,
+            [],
+            [],
+            self.sample_colors,
+        )
+
+    def _refresh_mayer_stowe(self, pressure_min: float, pressure_max: float) -> None:
+        self.mayer_stowe_results = [
+            calculate_mayer_stowe(result, pressure_min, pressure_max) for result in self.results
+        ]
+        plot_mayer_stowe_multi(
+            self.mayer_stowe_cumulative_plot,
+            self.mayer_stowe_incremental_plot,
+            self.mayer_stowe_results,
+            self.visible_results,
+            self.sample_colors,
+        )
+        self._apply_active_sample_curve_selection()
+
     def _refresh_all_metric_tables(self, pressure_min: float, pressure_max: float) -> None:
         for index, result in enumerate(self.results):
             if index >= len(self.metric_tables):
                 continue
             table = self.metric_tables[index]
             metrics = metrics_for_pressure_range(result, pressure_min, pressure_max)
-            self._set_selected_pore_volume_cell(index, metrics.pore_volume)
+            if index < self.selected_pore_volume_table.rowCount():
+                item = self.selected_pore_volume_table.item(index, 1)
+                if item is None:
+                    item = QtWidgets.QTableWidgetItem()
+                    self.selected_pore_volume_table.setItem(index, 1, item)
+                item.setText(f"{metrics.pore_volume:.6g}")
             summary = summary_metrics(result)
             rows = metrics.as_display_rows()
 
