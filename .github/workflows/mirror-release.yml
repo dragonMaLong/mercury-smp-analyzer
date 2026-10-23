@@ -15,6 +15,11 @@ on:
         description: gitee_download_parts array from the locally verified manifest
         required: true
         type: string
+      verify_only:
+        description: Only verify the already published GitHub download
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -29,6 +34,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - name: Download, verify and combine the four parts
+        if: ${{ !inputs.verify_only }}
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
           EXPECTED_SHA256: ${{ inputs.sha256 }}
@@ -77,7 +83,37 @@ jobs:
           PY
 
       - name: Upload the verified EXE to the existing release
+        if: ${{ !inputs.verify_only }}
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: gh release upload "$RELEASE_TAG" "MIP-DragonScience-${RELEASE_TAG}.exe" --repo "$GITHUB_REPOSITORY"
+
+      - name: Verify the published GitHub download
+        if: ${{ inputs.verify_only }}
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          EXPECTED_SHA256: ${{ inputs.sha256 }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+
+          tag = os.environ['RELEASE_TAG']
+          expected = os.environ['EXPECTED_SHA256'].upper()
+          assert re.fullmatch(r'v\d+\.\d+\.\d+', tag)
+          assert re.fullmatch(r'[0-9A-F]{64}', expected)
+          asset = f'MIP-DragonScience-{tag}.exe'
+          url = f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/releases/download/{tag}/{asset}'
+          subprocess.run([
+              'curl', '--fail', '--location', '--retry', '5', '--retry-all-errors',
+              '--connect-timeout', '30', '--max-time', '600', '--output', asset, url,
+          ], check=True)
+          with open(asset, 'rb') as source:
+              digest = hashlib.file_digest(source, 'sha256').hexdigest().upper()
+          assert digest == expected, 'Published EXE SHA256 mismatch'
+          print('DOWNLOAD VERIFIED GitHub', Path(asset).stat().st_size, digest, flush=True)
+          PY
