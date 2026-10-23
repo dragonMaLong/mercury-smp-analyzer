@@ -336,7 +336,7 @@ class SMPParser:
                 continue
             constant, mass, bulb, stem, max_head = values
             if (
-                5.0 <= constant <= 20.0
+                1.0 <= constant <= 100.0
                 and 20.0 <= mass <= 200.0
                 and 0.5 <= bulb <= 50.0
                 and 0.05 <= stem <= 2.0
