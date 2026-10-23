@@ -1,0 +1,83 @@
+name: Mirror verified Gitee release to GitHub
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag (for example v1.1.1)
+        required: true
+        type: string
+      sha256:
+        description: SHA256 of the complete EXE
+        required: true
+        type: string
+      parts_json:
+        description: gitee_download_parts array from the locally verified manifest
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-mirror-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Download, verify and combine the four parts
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          EXPECTED_SHA256: ${{ inputs.sha256 }}
+          PARTS_JSON: ${{ inputs.parts_json }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import subprocess
+
+          tag = os.environ['RELEASE_TAG']
+          expected = os.environ['EXPECTED_SHA256'].upper()
+          assert re.fullmatch(r'v\d+\.\d+\.\d+', tag), 'Invalid release tag'
+          assert re.fullmatch(r'[0-9A-F]{64}', expected), 'Invalid EXE digest'
+          parts = json.loads(os.environ['PARTS_JSON'])
+          assert len(parts) == 4, 'Expected exactly four parts'
+          asset = f'MIP-DragonScience-{tag}.exe'
+          base = f'https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/{tag}/'
+          for index, part in enumerate(parts, 1):
+              name = f'{asset}.part{index:02d}'
+              assert part['name'] == name and part['url'] == base + name
+              assert isinstance(part['size'], int) and part['size'] > 0
+              assert re.fullmatch(r'[0-9a-fA-F]{64}', part['sha256'])
+              subprocess.run([
+                  'curl', '--fail', '--location', '--retry', '5',
+                  '--retry-all-errors', '--connect-timeout', '30', '--max-time', '600',
+                  '--output', name, part['url'],
+              ], check=True)
+              assert Path(name).stat().st_size == part['size'], f'{name}: size mismatch'
+              with open(name, 'rb') as source:
+                  digest = hashlib.file_digest(source, 'sha256').hexdigest().upper()
+              assert digest == part['sha256'].upper(), f'{name}: SHA256 mismatch'
+              print('DOWNLOAD VERIFIED', name, digest, flush=True)
+          with open(asset, 'wb') as target:
+              for part in parts:
+                  with open(part['name'], 'rb') as source:
+                      shutil.copyfileobj(source, target)
+          with open(asset, 'rb') as source:
+              digest = hashlib.file_digest(source, 'sha256').hexdigest().upper()
+          assert digest == expected, 'Combined EXE SHA256 mismatch'
+          print('EXE VERIFIED', asset, Path(asset).stat().st_size, digest, flush=True)
+          PY
+
+      - name: Upload the verified EXE to the existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: gh release upload "$RELEASE_TAG" "MIP-DragonScience-${RELEASE_TAG}.exe" --repo "$GITHUB_REPOSITORY"
