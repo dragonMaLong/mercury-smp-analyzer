@@ -1924,7 +1924,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._update_download_thread is not None:
             self.statusBar().showMessage("正在下载软件更新...", 3000)
             return
-        if not info.download_url:
+        if not info.download_url and not info.download_parts:
             self._open_update_page(info)
             return
 
@@ -1996,7 +1996,7 @@ class MainWindow(QtWidgets.QMainWindow):
             dialog.setRange(0, 100)
             dialog.setValue(100)
             dialog.setLabelText("下载完成，正在安装更新...")
-        self.statusBar().showMessage(f"已下载 v{info.latest_version}，正在安装更新，请稍后重新打开软件。", 3000)
+        self.statusBar().showMessage(f"已下载 v{info.latest_version}，正在准备更新，完成后将自动重启。", 3000)
         QtCore.QTimer.singleShot(800, lambda: self._launch_downloaded_update(path))
 
     def _on_update_download_failed(self, message: str) -> None:

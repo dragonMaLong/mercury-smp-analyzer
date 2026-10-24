@@ -5,8 +5,10 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Callable
 
@@ -283,40 +285,68 @@ def _launch_replacement_script(downloaded_exe: Path) -> None:
     current_exe = Path(sys.executable).resolve()
     current_pid = os.getpid()
     script_dir = _download_dir()
-    script_dir.mkdir(parents=True, exist_ok=True)
-    script_path = script_dir / "apply_update.ps1"
+    script_path = script_dir / f"apply_update_{current_pid}_{uuid.uuid4().hex}.ps1"
+    ready_path = script_path.with_suffix(".ready")
+    launcher_log = script_path.with_suffix(".log")
     log_path = script_dir / "apply_update.log"
     backup_path = current_exe.with_name(current_exe.name + ".old")
-    script_path.write_text(
-        _replacement_script_text(current_exe, downloaded_exe, backup_path, log_path, current_pid),
-        encoding="utf-8-sig",
-    )
+    try:
+        script_dir.mkdir(parents=True, exist_ok=True)
+        script_path.write_text(
+            _replacement_script_text(current_exe, downloaded_exe, backup_path, log_path, current_pid, ready_path),
+            encoding="utf-8-sig",
+        )
+    except OSError as exc:
+        _append_update_log(log_path, f"launcher failed to prepare update script: {exc}")
+        raise UpdateDownloadError(f"无法准备更新程序，当前软件将保持打开：{exc}") from exc
     _append_update_log(
         log_path,
         f"launcher prepared update script; old={current_exe} new={downloaded_exe} pid={current_pid}",
     )
     try:
-        subprocess.Popen(
-            [
-                _powershell_executable(),
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(script_path),
-            ],
-            cwd=str(script_dir),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-            creationflags=_windows_update_script_flags(),
-        )
+        with launcher_log.open("ab") as output:
+            process = subprocess.Popen(
+                [
+                    _powershell_executable(),
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(script_path),
+                ],
+                cwd=str(script_dir),
+                stdin=subprocess.DEVNULL,
+                stdout=output,
+                stderr=output,
+                close_fds=True,
+                creationflags=_windows_update_script_flags(),
+                env=_windows_update_script_environment(),
+            )
     except OSError as exc:
         _append_update_log(log_path, f"launcher failed to start update script: {exc}")
         raise UpdateDownloadError(f"Failed to launch update replacement script: {exc}") from exc
+
+    # PowerShell can exit with code 0 without executing the script. Require an
+    # acknowledgement before allowing the GUI to close, and retain diagnostics.
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        if ready_path.exists():
+            _remove_quietly(ready_path)
+            _append_update_log(log_path, f"update helper ready; pid={process.pid}")
+            return
+        if process.poll() is not None:
+            break
+        time.sleep(0.1)
+    if process.poll() is None:
+        try:
+            process.terminate()
+            process.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            _append_update_log(log_path, f"helper cleanup failed: {exc}")
+    _append_update_log(log_path, f"helper startup failed; exit={process.returncode}; log={launcher_log}")
+    raise UpdateDownloadError(f"更新程序未能启动，当前软件将保持打开。错误日志：{launcher_log}")
 
 
 def _replacement_script_text(
@@ -325,6 +355,7 @@ def _replacement_script_text(
     backup_path: Path,
     log_path: Path,
     current_pid: int,
+    ready_path: Path | None = None,
 ) -> str:
     return f"""$ErrorActionPreference = 'Stop'
 $OldPath = {_ps_single_quoted(str(current_exe))}
@@ -332,6 +363,8 @@ $NewPath = {_ps_single_quoted(str(downloaded_exe))}
 $BackupPath = {_ps_single_quoted(str(backup_path))}
 $LogPath = {_ps_single_quoted(str(log_path))}
 $OldProcessId = {int(current_pid)}
+$ReadyPath = {_ps_single_quoted(str(ready_path)) if ready_path else "$null"}
+$StagePath = $OldPath + "." + $PID + ".updating"
 $TargetDir = Split-Path -Parent $OldPath
 $NewDir = Split-Path -Parent $NewPath
 
@@ -393,19 +426,24 @@ function Set-PyInstallerRestartEnvironment() {{
 function Start-UpdatedExecutable($Path, $WorkingDir) {{
     Set-PyInstallerRestartEnvironment
     Start-Sleep -Milliseconds 1200
-    Start-Process -FilePath $Path -WorkingDirectory $WorkingDir
+    Start-Process -FilePath $Path -WorkingDirectory $WorkingDir -PassThru | Out-Null
+    Write-UpdateLog ("restarted updated executable: " + $Path)
 }}
 
 Write-UpdateLog "apply update started; old=$OldPath new=$NewPath pid=$OldProcessId"
+if ($ReadyPath) {{
+    Set-Content -LiteralPath $ReadyPath -Value "ready" -Encoding ASCII
+}}
 
 try {{
     $process = Get-Process -Id $OldProcessId -ErrorAction SilentlyContinue
     if ($process) {{
         Write-UpdateLog "waiting for old process to exit"
-        Wait-Process -Id $OldProcessId -Timeout 60 -ErrorAction SilentlyContinue
+        Wait-Process -InputObject $process -Timeout 60 -ErrorAction Stop
     }}
 }} catch {{
     Write-UpdateLog "wait old process failed: $($_.Exception.Message)"
+    exit 1
 }}
 
 try {{
@@ -413,6 +451,11 @@ try {{
         throw "downloaded update is missing: $NewPath"
     }}
     Try-UnblockFile $NewPath
+    $ExpectedHash = (Get-FileHash -LiteralPath $NewPath -Algorithm SHA256).Hash
+    Copy-Item -LiteralPath $NewPath -Destination $StagePath -Force
+    if ((Get-FileHash -LiteralPath $StagePath -Algorithm SHA256).Hash -ne $ExpectedHash) {{
+        throw "staged update checksum mismatch"
+    }}
     try {{
         if (Test-Path -LiteralPath $BackupPath) {{
             Remove-Item -LiteralPath $BackupPath -Force -ErrorAction SilentlyContinue
@@ -420,11 +463,21 @@ try {{
     }} catch {{
         Write-UpdateLog "remove old backup failed: $($_.Exception.Message)"
     }}
-    Move-Item -LiteralPath $OldPath -Destination $BackupPath -Force
-    Copy-Item -LiteralPath $NewPath -Destination $OldPath -Force
+    # The one-file bootloader may hold the EXE after its Python child exits.
+    $Moved = $false
+    for ($attempt = 0; $attempt -lt 120; $attempt++) {{
+        try {{
+            Move-Item -LiteralPath $OldPath -Destination $BackupPath -Force
+            $Moved = $true
+            break
+        }} catch {{
+            Start-Sleep -Milliseconds 250
+        }}
+    }}
+    if (!$Moved) {{ throw "old executable is still locked or not writable: $OldPath" }}
+    Move-Item -LiteralPath $StagePath -Destination $OldPath -Force
     Try-UnblockFile $OldPath
     Write-UpdateLog "replacement complete"
-    Show-UpdateMessage "更新成功！立即重启软件" "软件更新" "Information"
     Start-UpdatedExecutable $OldPath $TargetDir
 }} catch {{
     $message = $_.Exception.Message
@@ -437,11 +490,11 @@ try {{
     }} catch {{
         Write-UpdateLog "restore old executable failed: $($_.Exception.Message)"
     }}
-    Show-UpdateMessage "自动更新失败，请手动运行已下载的更新文件：`n$NewPath" "软件更新失败" "Warning"
-    try {{
-        Start-Process -FilePath explorer.exe -ArgumentList "/select,`"$NewPath`""
-    }} catch {{
-        Write-UpdateLog "open update folder failed: $($_.Exception.Message)"
+    Show-UpdateMessage "自动更新未完成。请关闭软件后，将新版文件覆盖到原程序位置（保留原文件名），再从原入口启动：`n新版文件：$NewPath`n原程序位置：$OldPath" "软件更新失败" "Warning"
+    exit 1
+}} finally {{
+    if (Test-Path -LiteralPath $StagePath) {{
+        Remove-Item -LiteralPath $StagePath -Force -ErrorAction SilentlyContinue
     }}
 }}
 """
@@ -472,6 +525,16 @@ def _windows_detached_flags() -> int:
 def _windows_update_script_flags() -> int:
     if os.name != "nt":
         return 0
-    flags = _windows_detached_flags()
-    flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    return flags
+    # DETACHED_PROCESS overrides CREATE_NO_WINDOW and prevents PowerShell from
+    # executing scripts on some Windows installations, even with exit code 0.
+    return (getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+
+
+def _windows_update_script_environment() -> dict[str, str]:
+    # Windows PowerShell must discover its own modules even if the app was
+    # launched from PowerShell 7, whose inherited modules are incompatible.
+    environment = {key: value for key, value in os.environ.items()
+                   if key.upper() != "PSMODULEPATH"}
+    environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return environment
