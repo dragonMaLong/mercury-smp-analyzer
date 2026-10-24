@@ -225,13 +225,13 @@ def _download_update_part(
     partial.replace(target)
 
 
-def launch_update_and_exit(downloaded_exe: Path) -> None:
+def launch_update_and_exit(downloaded_exe: Path, download_page: str = "") -> None:
     exe_path = Path(downloaded_exe).resolve()
     if not exe_path.exists():
         raise UpdateDownloadError(f"找不到已下载的安装包：{exe_path}")
 
     if getattr(sys, "frozen", False):
-        _launch_replacement_script(exe_path)
+        _launch_replacement_script(exe_path, download_page)
     else:
         subprocess.Popen(
             [str(exe_path)],
@@ -281,7 +281,7 @@ def _append_update_log(path: Path, message: str) -> None:
         pass
 
 
-def _launch_replacement_script(downloaded_exe: Path) -> None:
+def _launch_replacement_script(downloaded_exe: Path, download_page: str = "") -> None:
     current_exe = Path(sys.executable).resolve()
     current_pid = os.getpid()
     script_dir = _download_dir()
@@ -293,7 +293,10 @@ def _launch_replacement_script(downloaded_exe: Path) -> None:
     try:
         script_dir.mkdir(parents=True, exist_ok=True)
         script_path.write_text(
-            _replacement_script_text(current_exe, downloaded_exe, backup_path, log_path, current_pid, ready_path),
+            _replacement_script_text(
+                current_exe, downloaded_exe, backup_path, log_path, current_pid, ready_path,
+                download_page=download_page,
+            ),
             encoding="utf-8-sig",
         )
     except OSError as exc:
@@ -356,6 +359,7 @@ def _replacement_script_text(
     log_path: Path,
     current_pid: int,
     ready_path: Path | None = None,
+    download_page: str = "",
 ) -> str:
     return f"""$ErrorActionPreference = 'Stop'
 $OldPath = {_ps_single_quoted(str(current_exe))}
@@ -364,6 +368,7 @@ $BackupPath = {_ps_single_quoted(str(backup_path))}
 $LogPath = {_ps_single_quoted(str(log_path))}
 $OldProcessId = {int(current_pid)}
 $ReadyPath = {_ps_single_quoted(str(ready_path)) if ready_path else "$null"}
+$DownloadPage = {_ps_single_quoted(download_page)}
 $StagePath = $OldPath + "." + $PID + ".updating"
 $TargetDir = Split-Path -Parent $OldPath
 $NewDir = Split-Path -Parent $NewPath
@@ -490,7 +495,18 @@ try {{
     }} catch {{
         Write-UpdateLog "restore old executable failed: $($_.Exception.Message)"
     }}
-    Show-UpdateMessage "自动更新未完成。请关闭软件后，将新版文件覆盖到原程序位置（保留原文件名），再从原入口启动：`n新版文件：$NewPath`n原程序位置：$OldPath" "软件更新失败" "Warning"
+    $FailureMessage = "自动更新未完成，原软件已保留。请手动下载新版本替换原程序。"
+    if ($DownloadPage) {{
+        $FailureMessage += "`n`n下载地址：$DownloadPage`n`n点击确定后将打开下载页面。"
+    }}
+    Show-UpdateMessage $FailureMessage "软件更新失败" "Warning"
+    if ($DownloadPage) {{
+        try {{
+            Start-Process -FilePath $DownloadPage
+        }} catch {{
+            Write-UpdateLog "open download page failed: $($_.Exception.Message)"
+        }}
+    }}
     exit 1
 }} finally {{
     if (Test-Path -LiteralPath $StagePath) {{

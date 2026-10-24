@@ -2009,7 +2009,7 @@ class MainWindow(QtWidgets.QMainWindow):
             update_button.setEnabled(True)
         if self._available_update_info is not None:
             self._set_update_available_indicator(self._available_update_info, enabled=True)
-        QtWidgets.QMessageBox.warning(self, "软件更新失败", message)
+        self._show_update_failed_dialog(message)
 
     def _clear_update_download_worker(self) -> None:
         self._update_download_thread = None
@@ -2017,12 +2017,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _launch_downloaded_update(self, path: str) -> None:
         try:
-            launch_update_and_exit(Path(path))
+            launch_update_and_exit(Path(path), self._update_download_page())
         except UpdateDownloadError as exc:
             if self._update_progress_dialog is not None:
                 self._update_progress_dialog.close()
                 self._update_progress_dialog = None
-            QtWidgets.QMessageBox.warning(self, "软件更新失败", str(exc))
+            self._show_update_failed_dialog(str(exc))
             update_button = getattr(self, "update_button", None)
             if update_button is not None:
                 update_button.setEnabled(True)
@@ -2038,6 +2038,32 @@ class MainWindow(QtWidgets.QMainWindow):
         for widget in QtWidgets.QApplication.topLevelWidgets():
             widget.close()
         QtWidgets.QApplication.exit(0)
+
+    def _update_download_page(self) -> str:
+        info = self._available_update_info
+        if info is None:
+            return ""
+        url = str(info.release_url or info.download_url or "").strip()
+        return url if url.startswith("https://") else ""
+
+    def _show_update_failed_dialog(self, message: str) -> None:
+        url = self._update_download_page()
+        box = QtWidgets.QMessageBox(self)
+        box.setIcon(QtWidgets.QMessageBox.Warning)
+        box.setWindowTitle("软件更新失败")
+        box.setText("自动更新没有完成，请手动下载新版本。")
+        details = str(message or "").strip()
+        if url:
+            link = f"下载地址：\n{url}"
+            details = f"{details}\n\n{link}" if details else link
+        box.setInformativeText(details)
+        box.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        open_button = box.addButton("打开下载页面", QtWidgets.QMessageBox.AcceptRole) if url else None
+        box.addButton("关闭", QtWidgets.QMessageBox.RejectRole)
+        exec_func = getattr(box, "exec", None) or box.exec_
+        exec_func()
+        if open_button is not None and box.clickedButton() == open_button:
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
 
     def _open_update_page(self, info: UpdateInfo) -> None:
         url = info.download_url or info.release_url

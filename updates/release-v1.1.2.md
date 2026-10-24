@@ -1,18 +1,7 @@
-# MIP综合分析-DragonScience v1.1.2
+MIP综合分析-DragonScience v1.1.2
 
-## 自动更新修复
+修复了一些问题，提升了稳定性，安装包体积更小。
 
-- 修复 Windows 下更新脚本进程创建参数冲突：旧版可能下载完成后退出，但 PowerShell 未执行替换，重新打开仍是旧版。
-- 更新助手必须先确认启动成功，软件才退出；启动失败时保留当前窗口，并记录错误日志。
-- 移除阻塞自动重启的成功弹窗；更新完成后直接打开原路径下的新版本。
-- 替换前暂存并校验文件，等待单文件程序释放占用，替换失败时保留或恢复旧程序。
-- 修复旧进程恰好退出时的等待竞态，以及从 PowerShell 7 启动软件时的模块环境兼容问题。
-- 保留 v1.1.1 的膨胀计常数修复。
-
-## 旧版本用户恢复
-
-v1.0.0、v1.1.0 和 v1.1.1 自带的旧更新器都包含上述问题；仅下载新包不能修复仍在旧程序中运行的更新器。若点击更新后仍打开旧版，请先关闭软件，将完整新版 EXE 替换到原软件所在位置（保留原文件名），再从原入口启动并确认版本。关闭后从同一入口再次打开，确认仍为新版。不要只在下载目录打开新版而继续使用指向旧文件的快捷方式。
-
-v0.1.x 没有内置自动更新，需要手动升级。历史版本审计与发布验证流程见 [发布指南](https://github.com/dragonMaLong/mercury-smp-analyzer/blob/main/docs/RELEASING.md)。
-
-GitHub 提供完整 EXE；Gitee 提供相同文件的四个分片。无需安装 Python。
+如果点击“更新”后软件没有自动打开新版本，请手动下载新版本：
+国内下载：https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/tag/v1.1.2
+GitHub下载：https://github.com/dragonMaLong/mercury-smp-analyzer/releases/tag/v1.1.2

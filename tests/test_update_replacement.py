@@ -122,9 +122,10 @@ def _running_old_executable(case):
 
 
 @contextmanager
-def _running_helper(case, old_pid, *, suppress_failure_ui=False, script_transform=None):
+def _running_helper(case, old_pid, *, suppress_failure_ui=False, script_transform=None, download_page=""):
     script = updater._replacement_script_text(
         case.current, case.downloaded, case.backup, case.log, old_pid, case.ready,
+        download_page=download_page,
     )
     if suppress_failure_ui:
         # Only replace failure notifications, leaving every filesystem and
@@ -248,6 +249,35 @@ def test_replacement_failure_keeps_original_executable(replacement_case, failure
     assert case.current.read_bytes() == case.old_bytes
     assert not case.backup.exists()
     assert not Path(str(case.current) + ".started").exists()
+
+
+def test_replacement_failure_shows_and_opens_download_page(replacement_case):
+    case = replacement_case
+    case.downloaded.unlink()
+    page = "https://gitee.com/example/releases/tag/v9.9.9?a=1&b='2'"
+
+    def record_failure_ui(script):
+        # Log the dialog text and the page that would open instead of showing UI.
+        script = script.replace(
+            'Show-UpdateMessage $FailureMessage "软件更新失败" "Warning"',
+            'Write-UpdateLog ("failure dialog: " + $FailureMessage)',
+        )
+        return script.replace(
+            "Start-Process -FilePath $DownloadPage",
+            'Write-UpdateLog ("would open: " + $DownloadPage)',
+        )
+
+    with _running_old_executable(case) as old, _running_helper(
+        case, old.pid, script_transform=record_failure_ui, download_page=page,
+    ) as helper:
+        Path(str(case.current) + ".stop").touch()
+        old.wait(timeout=5)
+        helper.communicate(timeout=20)
+    failure_log = case.log.read_text(encoding="utf-8-sig")
+    assert "failure dialog: " in failure_log
+    assert "下载地址：" + page in failure_log
+    assert "would open: " + page in failure_log
+    assert case.current.read_bytes() == case.old_bytes
 
 
 @pytest.mark.parametrize("polluted_module_path", [False, True])

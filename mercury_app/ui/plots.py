@@ -8,7 +8,7 @@ os.environ.setdefault("PYQTGRAPH_QT_LIB", "PyQt5")
 import numpy as np
 import pyqtgraph as pg
 from scipy.interpolate import Akima1DInterpolator
-from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
+from pyqtgraph.Qt import QtCore, QtGui, QtWidgets, isQObjectAlive
 
 
 pg.setConfigOptions(antialias=True, useOpenGL=False)
@@ -429,6 +429,9 @@ def _sync_plot_legend_visibility(plot: pg.PlotWidget) -> None:
 
 
 def _finalize_legend_layout(plot: pg.PlotWidget) -> None:
+    # Deferred call: the plot may have been destroyed before the timer fired.
+    if not isQObjectAlive(plot):
+        return
     _apply_default_legend_position(plot)
     _position_legend_toggle_button(plot)
 

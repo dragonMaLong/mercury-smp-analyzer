@@ -320,11 +320,15 @@ def _akima_interpolate(x_values: np.ndarray, y_values: np.ndarray, target_x: np.
 
 
 def _local_linear_derivative(y_values: np.ndarray, center_index: int, start: int, stop: int) -> float:
-    indexes = np.arange(start, stop, dtype=float)
-    offsets = indexes - float(center_index)
-    design = np.vstack([np.ones_like(offsets), offsets]).T
-    coefficients = np.linalg.lstsq(design, y_values[start:stop], rcond=None)[0]
-    return float(coefficients[1])
+    # Closed-form least-squares slope: independent of the LAPACK backend, and
+    # exactly zero over a flat window.
+    offsets = np.arange(start, stop, dtype=float) - float(center_index)
+    centered = offsets - offsets.mean()
+    denominator = float(np.sum(centered**2))
+    if denominator == 0.0:
+        return 0.0
+    values = y_values[start:stop] - y_values[center_index]
+    return float(np.sum(centered * values) / denominator)
 
 
 def _anchored_linear_derivative(y_values: np.ndarray, center_index: int, start: int, stop: int) -> float:
@@ -347,6 +351,12 @@ def _nine_point_smoothed_derivative(y_values: np.ndarray) -> np.ndarray:
         delta=1.0,
         mode="interp",
     )
+    # A flat window has an exact zero slope; the filter coefficients only sum
+    # to zero within rounding, which depends on the LAPACK backend.
+    if len(y_values) >= SMOOTH_DERIVATIVE_WINDOW:
+        windows = np.lib.stride_tricks.sliding_window_view(y_values, SMOOTH_DERIVATIVE_WINDOW)
+        flat = np.flatnonzero(np.ptp(windows, axis=1) == 0) + SMOOTH_DERIVATIVE_WINDOW // 2
+        derivative[flat] = 0.0
 
     edge_count = min(SMOOTH_DERIVATIVE_WINDOW // 2, len(y_values))
     for i in range(edge_count):
