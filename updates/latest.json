@@ -11,29 +11,29 @@
     {
       "name": "MIP-DragonScience-v1.1.2.exe.part01",
       "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.2/MIP-DragonScience-v1.1.2.exe.part01",
-      "size": 85126905,
-      "sha256": "5C451039728061CDE8E53B26227414570F237FF549421A1D71CEC2C4DFC16DA3"
+      "size": 23159317,
+      "sha256": "41097E1614959FF63457CF35F5BCFCD9951363095551668868487105171C5C4D"
     },
     {
       "name": "MIP-DragonScience-v1.1.2.exe.part02",
       "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.2/MIP-DragonScience-v1.1.2.exe.part02",
-      "size": 85126905,
-      "sha256": "CEE50AFDFD57DD7F8B6A108F67354D0F1B13BC4AFF4E7031D9514868EC9AC3BB"
+      "size": 23159317,
+      "sha256": "5668DD8F638302AB36C7B25A599F9F9827D22550AEEF0531A58899DD7F3FCDD6"
     },
     {
       "name": "MIP-DragonScience-v1.1.2.exe.part03",
       "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.2/MIP-DragonScience-v1.1.2.exe.part03",
-      "size": 85126905,
-      "sha256": "963AB350C5A7598C89400541895B567A845ED2C78D6FCBB62FBBA642A457DA9C"
+      "size": 23159317,
+      "sha256": "500543EEA33A7EE38FB64AE311B1CB4547F92D9826D049103781BCD082727460"
     },
     {
       "name": "MIP-DragonScience-v1.1.2.exe.part04",
       "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.2/MIP-DragonScience-v1.1.2.exe.part04",
-      "size": 85126905,
-      "sha256": "562379D02FAE38072D9DD6847F541E6A0884CFF80B52A5DFD73750130D281F0E"
+      "size": 23159316,
+      "sha256": "06D0EAAA588EFE4916FE36BD8093C0548DA86FE66AEB8C7375F902EEBB83A31A"
     }
   ],
-  "release_notes": "# MIP综合分析-DragonScience v1.1.2\n\n## 自动更新修复\n\n- 修复 Windows 下更新脚本进程创建参数冲突：旧版可能下载完成后退出，但 PowerShell 未执行替换，重新打开仍是旧版。\n- 更新助手必须先确认启动成功，软件才退出；启动失败时保留当前窗口，并记录错误日志。\n- 移除阻塞自动重启的成功弹窗；更新完成后直接打开原路径下的新版本。\n- 替换前暂存并校验文件，等待单文件程序释放占用，替换失败时保留或恢复旧程序。\n- 修复旧进程恰好退出时的等待竞态，以及从 PowerShell 7 启动软件时的模块环境兼容问题。\n- 保留 v1.1.1 的膨胀计常数修复。\n\n## 旧版本用户恢复\n\nv1.0.0、v1.1.0 和 v1.1.1 自带的旧更新器都包含上述问题；仅下载新包不能修复仍在旧程序中运行的更新器。若点击更新后仍打开旧版，请先关闭软件，将完整新版 EXE 替换到原软件所在位置（保留原文件名），再从原入口启动并确认版本。关闭后从同一入口再次打开，确认仍为新版。不要只在下载目录打开新版而继续使用指向旧文件的快捷方式。\n\nv0.1.x 没有内置自动更新，需要手动升级。历史版本审计与发布验证流程见 [发布指南](https://github.com/dragonMaLong/mercury-smp-analyzer/blob/main/docs/RELEASING.md)。\n\nGitHub 提供完整 EXE；Gitee 提供相同文件的四个分片。无需安装 Python。\n",
+  "release_notes": "MIP综合分析-DragonScience v1.1.2\n\n修复了一些问题，提升了稳定性，安装包体积更小。\n\n如果点击“更新”后软件没有自动打开新版本，请手动下载新版本：\n国内下载：https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/tag/v1.1.2\nGitHub下载：https://github.com/dragonMaLong/mercury-smp-analyzer/releases/tag/v1.1.2\n",
   "published_at": "2026-10-24",
-  "sha256": "27814D096C421C50A13EFC8A6003BF24B305D2477FBB8C02359A94C8F3ECAF5B"
+  "sha256": "067DA2C9B00CDBBACB5F7E19F2D550CBC3489F4413EF7FB8D3A5E59646407DAA"
 }
