@@ -1,39 +1,39 @@
 {
-  "version": "v1.1.1",
-  "release_name": "MIP综合分析-DragonScience v1.1.1",
-  "asset_name": "MIP-DragonScience-v1.1.1.exe",
-  "release_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/tag/v1.1.1",
-  "download_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/download/v1.1.1/MIP-DragonScience-v1.1.1.exe",
-  "github_release_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/tag/v1.1.1",
-  "github_download_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/download/v1.1.1/MIP-DragonScience-v1.1.1.exe",
-  "gitee_release_url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/tag/v1.1.1",
+  "version": "v1.1.2",
+  "release_name": "MIP综合分析-DragonScience v1.1.2",
+  "asset_name": "MIP-DragonScience-v1.1.2.exe",
+  "release_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/tag/v1.1.2",
+  "download_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/download/v1.1.2/MIP-DragonScience-v1.1.2.exe",
+  "github_release_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/tag/v1.1.2",
+  "github_download_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/download/v1.1.2/MIP-DragonScience-v1.1.2.exe",
+  "gitee_release_url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/tag/v1.1.2",
   "gitee_download_parts": [
     {
-      "name": "MIP-DragonScience-v1.1.1.exe.part01",
-      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.1/MIP-DragonScience-v1.1.1.exe.part01",
-      "size": 85126726,
-      "sha256": "CD5E248C1BB84CE01D667ED1E2D39DC2009C5477977759281CC884CC2B336637"
+      "name": "MIP-DragonScience-v1.1.2.exe.part01",
+      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.2/MIP-DragonScience-v1.1.2.exe.part01",
+      "size": 85126905,
+      "sha256": "5C451039728061CDE8E53B26227414570F237FF549421A1D71CEC2C4DFC16DA3"
     },
     {
-      "name": "MIP-DragonScience-v1.1.1.exe.part02",
-      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.1/MIP-DragonScience-v1.1.1.exe.part02",
-      "size": 85126726,
-      "sha256": "7AECFA990CEEC5C873EA441860289011C41521731A8D9ADDC09A431C070BB226"
+      "name": "MIP-DragonScience-v1.1.2.exe.part02",
+      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.2/MIP-DragonScience-v1.1.2.exe.part02",
+      "size": 85126905,
+      "sha256": "CEE50AFDFD57DD7F8B6A108F67354D0F1B13BC4AFF4E7031D9514868EC9AC3BB"
     },
     {
-      "name": "MIP-DragonScience-v1.1.1.exe.part03",
-      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.1/MIP-DragonScience-v1.1.1.exe.part03",
-      "size": 85126726,
-      "sha256": "4709AE2B272740D866FEA0FC435658F2FF1433820354AB8D0F51FB843AD7866C"
+      "name": "MIP-DragonScience-v1.1.2.exe.part03",
+      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.2/MIP-DragonScience-v1.1.2.exe.part03",
+      "size": 85126905,
+      "sha256": "963AB350C5A7598C89400541895B567A845ED2C78D6FCBB62FBBA642A457DA9C"
     },
     {
-      "name": "MIP-DragonScience-v1.1.1.exe.part04",
-      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.1/MIP-DragonScience-v1.1.1.exe.part04",
-      "size": 85126724,
-      "sha256": "0390031D0CA7A4F390A9BC3A27398EF705F539D901469ECE5942C70927644DFC"
+      "name": "MIP-DragonScience-v1.1.2.exe.part04",
+      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.2/MIP-DragonScience-v1.1.2.exe.part04",
+      "size": 85126905,
+      "sha256": "562379D02FAE38072D9DD6847F541E6A0884CFF80B52A5DFD73750130D281F0E"
     }
   ],
-  "release_notes": "# MIP综合分析-DragonScience v1.1.1\n\n## 问题修复\n\n- 修复使用膨胀计常数大于 20 µL/pF 的膨胀计（如 10-0303 为 22.065 µL/pF、10-0820 为 28.63 µL/pF）测得的 SMP 文件导入后曲线显示为一条直线的问题。原因是膨胀计参数识别范围限定为 5–20 µL/pF，超出范围时读取到错误数值，导致高压段数据被丢弃、进汞体积接近 0。识别范围已放宽为 1–100 µL/pF。\n- 新增对应的回归测试。\n\n## 验证\n\n- 对本地 70 份 SMP 文件做改前改后对比：67 份结果完全一致；此前显示为直线的 3 份文件（BY-60-70nm、BY-80-90nm、铂源压汞）现在可以正确计算完整的进汞和退汞曲线（约 91–94 个数据点，最高约 33,000 psia）。\n\n## 下载与更新\n\n- GitHub 提供完整单文件 EXE，无需安装 Python。\n- Gitee 提供同一 EXE 的 4 个分片；软件内“软件更新”会自动下载、校验并合并。\n- 原始 SMP 文件不会被改写。更新前请保存需要导出的结果。\n",
-  "published_at": "2026-10-23",
-  "sha256": "9E64882BFDAB61A4863202BCF15249288CD0EF8D3C920006D374245D05041277"
+  "release_notes": "# MIP综合分析-DragonScience v1.1.2\n\n## 自动更新修复\n\n- 修复 Windows 下更新脚本进程创建参数冲突：旧版可能下载完成后退出，但 PowerShell 未执行替换，重新打开仍是旧版。\n- 更新助手必须先确认启动成功，软件才退出；启动失败时保留当前窗口，并记录错误日志。\n- 移除阻塞自动重启的成功弹窗；更新完成后直接打开原路径下的新版本。\n- 替换前暂存并校验文件，等待单文件程序释放占用，替换失败时保留或恢复旧程序。\n- 修复旧进程恰好退出时的等待竞态，以及从 PowerShell 7 启动软件时的模块环境兼容问题。\n- 保留 v1.1.1 的膨胀计常数修复。\n\n## 旧版本用户恢复\n\nv1.0.0、v1.1.0 和 v1.1.1 自带的旧更新器都包含上述问题；仅下载新包不能修复仍在旧程序中运行的更新器。若点击更新后仍打开旧版，请先关闭软件，将完整新版 EXE 替换到原软件所在位置（保留原文件名），再从原入口启动并确认版本。关闭后从同一入口再次打开，确认仍为新版。不要只在下载目录打开新版而继续使用指向旧文件的快捷方式。\n\nv0.1.x 没有内置自动更新，需要手动升级。历史版本审计与发布验证流程见 [发布指南](https://github.com/dragonMaLong/mercury-smp-analyzer/blob/main/docs/RELEASING.md)。\n\nGitHub 提供完整 EXE；Gitee 提供相同文件的四个分片。无需安装 Python。\n",
+  "published_at": "2026-10-24",
+  "sha256": "27814D096C421C50A13EFC8A6003BF24B305D2477FBB8C02359A94C8F3ECAF5B"
 }
