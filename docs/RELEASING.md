@@ -51,14 +51,22 @@ v1.0.0、v1.1.0、v1.1.1 下载的新 EXE 不能修复仍在旧 EXE 内运行的
 
 1. 检查工作区改动、当前版本和 Git 提交，阅读与本次变更有关的历史源码及实际已发布 EXE。更新器变更尤其要覆盖所有仍被用户使用的旧版本。
 2. 更新 `mercury_app/version.py` 和 `updates/release-v<版本>.md`。确定最终代码后再打包，已验证后又有代码变化则必须重新构建并重做受影响验证。
-3. 使用此前成功的 Python 环境与仓库中的 `压汞数据分析.spec`。本次已复现问题和集成测试使用 Windows、Python 3.12.3、PyInstaller 6.12.0；记录实际构建依赖版本，不以“能运行源码”代替打包兼容性检查。
-4. 执行项目测试，保留测试结果。更新器重点测试为 `tests/test_update_replacement.py` 和 `tests/test_update_parts.py`；前者需要 Windows 和可用的 .NET Framework C# 编译器，跳过测试不算通过真实 Windows 验证。
+3. **只在干净的 pip 虚拟环境中打包，不要用 Anaconda。** Anaconda 的 numpy/scipy 依赖 Intel MKL，PyInstaller 会把约 600 MB 的 MKL DLL 全部打进 EXE（v1.1.2 首版因此为 340 MB，改用干净环境后为 93 MB）。从 Anaconda 的 Python 创建的 venv 也不行。环境要求：
+   - 使用非 Anaconda 的 Python 3.12.3（例如 `uv python install 3.12.3` 安装的独立版本），依赖固定为 numpy 1.26.4、scipy 1.13.1、PyQt5 5.15.10、pyqtgraph 0.14.0、openpyxl 3.1.2、PyInstaller 6.12.0、pyinstaller-hooks-contrib 2025.1；测试另需 pytest 7.4.4、pypdf，发布脚本另需 requests、requests-toolbelt。
+   - **虚拟环境必须放在纯英文路径下**（例如 `C:\build\venv-mip`）。pip 版 Qt 的插件路径不支持中文，放在本项目目录（含“压汞”）下时 `QApplication` 会卡住不动。打包后的 EXE 运行在 `_MEI` 临时目录，不受影响。
+   - spec 已排除 `numba`、`llvmlite`（pyqtgraph 会尝试导入，程序不使用）。
+   - 打包后检查 `build/<workpath>/压汞数据分析/PKG-00.toc` 中不含 `mkl_`、`anaconda` 字样，并记录 EXE 大小。
+4. 执行项目测试，保留测试结果。更新器重点测试为 `tests/test_update_replacement.py` 和 `tests/test_update_parts.py`；前者需要 Windows 和可用的 .NET Framework C# 编译器，跳过测试不算通过真实 Windows 验证。界面测试在同一进程中连续创建大量窗口时会出现 Qt 访问冲突（Anaconda 环境同样如此，与改动无关），因此按测试文件逐个运行。
+5. 更换数值库或其版本时，用同一批 SMP 文件对比新旧构建的计算结果和 `--csv` 导出，确认汇总、孔结构、Mayer-Stowe 结果一致，差异只在舍入量级。
 
 以 v1.1.2 为例，独立保留构建输出，避免覆盖用户正在使用的程序：
 
 ```powershell
-python -m pytest tests
-python -m PyInstaller --noconfirm --distpath dist/release-v1.1.2 --workpath build/release-v1.1.2 "压汞数据分析.spec"
+uv python install 3.12.3
+uv venv --python 3.12.3 --managed-python C:\build\venv-mip
+uv pip install --python C:\build\venv-mip\Scripts\python.exe numpy==1.26.4 scipy==1.13.1 PyQt5==5.15.10 pyqtgraph==0.14.0 openpyxl==3.1.2 pyinstaller==6.12.0 pyinstaller-hooks-contrib==2025.1 pytest==7.4.4 pypdf requests requests-toolbelt
+Get-ChildItem tests\test_*.py | ForEach-Object { C:\build\venv-mip\Scripts\python.exe -m pytest $_.FullName -q }
+C:\build\venv-mip\Scripts\python.exe -m PyInstaller --noconfirm --distpath dist/release-v1.1.2 --workpath build/release-v1.1.2 "压汞数据分析.spec"
 ```
 
 ## 发布前必须执行的更新验证
