@@ -55,6 +55,7 @@ v1.0.0、v1.1.0、v1.1.1 下载的新 EXE 不能修复仍在旧 EXE 内运行的
    - 使用非 Anaconda 的 Python 3.12.3（例如 `uv python install 3.12.3` 安装的独立版本），依赖固定为 numpy 1.26.4、scipy 1.13.1、PyQt5 5.15.10、pyqtgraph 0.14.0、openpyxl 3.1.2、PyInstaller 6.12.0、pyinstaller-hooks-contrib 2025.1；测试另需 pytest 7.4.4、pypdf，发布脚本另需 requests、requests-toolbelt。
    - **虚拟环境必须放在纯英文路径下**（例如 `C:\build\venv-mip`）。pip 版 Qt 的插件路径不支持中文，放在本项目目录（含“压汞”）下时 `QApplication` 会卡住不动。打包后的 EXE 运行在 `_MEI` 临时目录，不受影响。
    - spec 已排除 `numba`、`llvmlite`（pyqtgraph 会尝试导入，程序不使用）。
+   - 构建子进程的 `PATH` 也要排除 Anaconda/Miniconda 路径，并移除继承的 `CONDA_*`、`PYTHONPATH`、`PYTHONHOME` 和 Qt 插件路径变量，防止干净 venv 仍从外部环境收集 DLL。
    - 打包后检查 `build/<workpath>/压汞数据分析/PKG-00.toc` 中不含 `mkl_`、`anaconda` 字样，并记录 EXE 大小。
 4. 执行项目测试，保留测试结果。更新器重点测试为 `tests/test_update_replacement.py` 和 `tests/test_update_parts.py`；前者需要 Windows 和可用的 .NET Framework C# 编译器，跳过测试不算通过真实 Windows 验证。界面测试在同一进程中连续创建大量窗口时会出现 Qt 访问冲突（Anaconda 环境同样如此，与改动无关），因此按测试文件逐个运行。
 5. 更换数值库或其版本时，用同一批 SMP 文件对比新旧构建的计算结果和 `--csv` 导出，确认汇总、孔结构、Mayer-Stowe 结果一致，差异只在舍入量级。
