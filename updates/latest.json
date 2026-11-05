@@ -1,39 +1,39 @@
 {
-  "version": "v1.1.2",
-  "release_name": "MIP综合分析-DragonScience v1.1.2",
-  "asset_name": "MIP-DragonScience-v1.1.2.exe",
-  "release_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/tag/v1.1.2",
-  "download_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/download/v1.1.2/MIP-DragonScience-v1.1.2.exe",
-  "github_release_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/tag/v1.1.2",
-  "github_download_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/download/v1.1.2/MIP-DragonScience-v1.1.2.exe",
-  "gitee_release_url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/tag/v1.1.2",
+  "version": "v1.1.3",
+  "release_name": "MIP综合分析-DragonScience v1.1.3",
+  "asset_name": "MIP-DragonScience-v1.1.3.exe",
+  "release_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/tag/v1.1.3",
+  "download_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/download/v1.1.3/MIP-DragonScience-v1.1.3.exe",
+  "github_release_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/tag/v1.1.3",
+  "github_download_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/download/v1.1.3/MIP-DragonScience-v1.1.3.exe",
+  "gitee_release_url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/tag/v1.1.3",
   "gitee_download_parts": [
     {
-      "name": "MIP-DragonScience-v1.1.2.exe.part01",
-      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.2/MIP-DragonScience-v1.1.2.exe.part01",
-      "size": 23159317,
-      "sha256": "41097E1614959FF63457CF35F5BCFCD9951363095551668868487105171C5C4D"
+      "name": "MIP-DragonScience-v1.1.3.exe.part01",
+      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.3/MIP-DragonScience-v1.1.3.exe.part01",
+      "size": 23205585,
+      "sha256": "A62CB62A5A2AD80AD9064DBEE8C437076D8AC11387DCAEED90AD0DC86A17FA9E"
     },
     {
-      "name": "MIP-DragonScience-v1.1.2.exe.part02",
-      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.2/MIP-DragonScience-v1.1.2.exe.part02",
-      "size": 23159317,
-      "sha256": "5668DD8F638302AB36C7B25A599F9F9827D22550AEEF0531A58899DD7F3FCDD6"
+      "name": "MIP-DragonScience-v1.1.3.exe.part02",
+      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.3/MIP-DragonScience-v1.1.3.exe.part02",
+      "size": 23205585,
+      "sha256": "24E6798FBCEBA06493824040D1CC4AFDB4F7B947524BDE597281414F0E5CE2C0"
     },
     {
-      "name": "MIP-DragonScience-v1.1.2.exe.part03",
-      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.2/MIP-DragonScience-v1.1.2.exe.part03",
-      "size": 23159317,
-      "sha256": "500543EEA33A7EE38FB64AE311B1CB4547F92D9826D049103781BCD082727460"
+      "name": "MIP-DragonScience-v1.1.3.exe.part03",
+      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.3/MIP-DragonScience-v1.1.3.exe.part03",
+      "size": 23205585,
+      "sha256": "A722DA889066E1A6EB5E59E1C90CD8C6F33B2F7F3D7C582ECFD8BFFA41D3234A"
     },
     {
-      "name": "MIP-DragonScience-v1.1.2.exe.part04",
-      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.2/MIP-DragonScience-v1.1.2.exe.part04",
-      "size": 23159316,
-      "sha256": "06D0EAAA588EFE4916FE36BD8093C0548DA86FE66AEB8C7375F902EEBB83A31A"
+      "name": "MIP-DragonScience-v1.1.3.exe.part04",
+      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.3/MIP-DragonScience-v1.1.3.exe.part04",
+      "size": 23205582,
+      "sha256": "26EC257D983BDC4B6ADEE81A3E6463200B75F7695780AB8E0385B7E5B800EB3D"
     }
   ],
-  "release_notes": "MIP综合分析-DragonScience v1.1.2\n\n修复了一些问题，提升了稳定性，安装包体积更小。\n\n如果点击“更新”后软件没有自动打开新版本，请手动下载新版本：\n国内下载：https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/tag/v1.1.2\nGitHub下载：https://github.com/dragonMaLong/mercury-smp-analyzer/releases/tag/v1.1.2\n",
-  "published_at": "2026-10-24",
-  "sha256": "067DA2C9B00CDBBACB5F7E19F2D550CBC3489F4413EF7FB8D3A5E59646407DAA"
+  "release_notes": "MIP综合分析-DragonScience v1.1.3\n\n本次更新：\n- 文件名排序与 BET 保持一致，支持自然排序和反向排序；列表右键新增“清空列表”。\n- 文件导入窗口与 BET 保持一致：可浏览 SMP 文件、多选“添加”，也可只“选择文件夹”后再筛选导入。\n- 新增 PDF 报告导出，并完善 Excel 导出；报告包含结果表、计算参数和分析图。\n- “导出文件”右侧新增齿轮设置，合并导出、结果显示、关于与反馈设置。\n- 孔结构结果表支持样品按行或按列显示，可通过表头方向按钮切换。\n- 完善用户使用统计功能；新安装默认启用，保留已有关闭选择，统计设置入口暂时隐藏。\n- 更新提示采用与 BET 一致的 Windows 原生样式，并修复部分界面问题。\n\n如果点击“更新”后软件没有自动打开新版本，请手动下载新版本：\n国内下载：https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/tag/v1.1.3\nGitHub下载：https://github.com/dragonMaLong/mercury-smp-analyzer/releases/tag/v1.1.3\n\nGitee 的分片附件需按 part01 至 part04 顺序合并后运行；GitHub 提供完整 EXE。\nv1.0.0、v1.1.0、v1.1.1 用户若遇到更新后仍是旧版，请关闭旧程序，将新版 EXE 替换到原程序位置，再从原入口打开。\n",
+  "published_at": "2026-11-05",
+  "sha256": "29BC6A147586849E708239BB9128FB0EE054B62295178EB1707BC2098A5A5881"
 }
