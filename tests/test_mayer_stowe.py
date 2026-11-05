@@ -124,7 +124,13 @@ def test_pressure_regions_are_independent_and_use_requested_defaults() -> None:
         assert window._current_mayer_pressure_region() == pytest.approx([400.0, 10000.0])
 
         window.mayer_pressure_region.setRegion(window._mayer_pressure_to_region_values(500.0, 9000.0))
-        QtTest.QTest.qWait(50)
+        # Calculation is queued on a Qt timer. Wait for the result, since a
+        # loaded CI/Windows event loop need not dispatch within exactly 50 ms.
+        for _ in range(100):
+            if (np.isclose(window.mayer_stowe_results[0].pressure_min, 500.0)
+                    and np.isclose(window.mayer_stowe_results[0].pressure_max, 9000.0)):
+                break
+            QtTest.QTest.qWait(10)
         assert window._current_pressure_region() == pytest.approx([3200.0, 8800.0])
         assert window._current_mayer_pressure_region() == pytest.approx([500.0, 9000.0])
         assert window.mayer_stowe_results[0].pressure_min == pytest.approx(500.0)

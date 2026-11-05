@@ -1,11 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
+from pathlib import Path
 
+# Statistics endpoint (no secret); git-ignored, copied from telemetry_config.example.json.
+telemetry_datas = [('telemetry_config.json', '.')] if Path('telemetry_config.json').is_file() else []
 
 a = Analysis(
     ['app.py'],
     pathex=[],
     binaries=[],
-    datas=[('.\\assets\\mip-dragon-science-logo.ico', 'assets')],
+    datas=[('.\\assets\\mip-dragon-science-logo.ico', 'assets'),
+           ('.\\assets\\dragonscience-logo.png', 'assets')] + telemetry_datas,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

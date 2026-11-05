@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import threading
+import time
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -40,6 +42,12 @@ from mercury_app.ui.plots import (
     set_sample_curve_hover_plots,
 )
 from mercury_app.version import __version__
+from mercury_app.core.export_settings import AppSettings
+from mercury_app.ui.export_settings import AppSettingsDialog, make_gear_icon
+from mercury_app.ui.pore_table import PoreTableController
+from mercury_app.ui.telemetry_ui import TelemetryUiMixin
+from mercury_app.ui.import_picker import ImportFilePicker
+from mercury_app.ui.native_import_picker import choose_import_files
 
 
 APP_NAME = "MIP综合分析-DragonScience"
@@ -54,6 +62,13 @@ DEFAULT_PORE_STRUCTURE_PRESSURE_REGION = (400.0, 10000.0)
 
 
 Signal = getattr(QtCore, "Signal", None) or getattr(QtCore, "pyqtSignal")
+
+
+def _natural_sort_key(text: str) -> tuple:
+    """Match BET: numeric runs by value, text case-insensitively, stable ties."""
+    parts = re.findall(r"\d+|\D+", str(text))
+    key = tuple((0, int(part), "") if part.isdigit() else (1, 0, part.casefold()) for part in parts)
+    return key + ((2, 0, str(text)),)
 
 
 class NumericTableWidgetItem(QtWidgets.QTableWidgetItem):
@@ -225,6 +240,7 @@ class SampleRowHoverFilter(QtCore.QObject):
 
     def __init__(self, table) -> None:
         super().__init__(table)
+        self.table = table
         self.row = -1
         views = [table]
         if hasattr(table, "_frozen_table"):
@@ -240,7 +256,9 @@ class SampleRowHoverFilter(QtCore.QObject):
             row = self.row
             if event.type() == QtCore.QEvent.MouseMove:
                 index = self.views[obj].indexAt(event.pos())
-                row = index.row() if index.isValid() else -1
+                row = (
+                    index.column() - 1 if getattr(self.table, "_transposed", False) else index.row()
+                ) if index.isValid() else -1
             elif event.type() in (QtCore.QEvent.Leave, QtCore.QEvent.Hide):
                 row = -1
             if row != self.row:
@@ -1038,9 +1056,10 @@ class FileImportDialog(QtWidgets.QDialog):
         available_sort: tuple[int, object] | None = None,
     ) -> None:
         super().__init__(parent)
+        self.setWindowFlag(QtCore.Qt.WindowContextHelpButtonHint, False)
         self.setWindowTitle("导入 SMP 文件")
-        self.resize(960, 620)
-        self.setMinimumSize(820, 500)
+        self.resize(1060, 640)
+        self.setMinimumSize(860, 520)
         self.setAcceptDrops(True)
         self.current_directory = Path(initial_dir or Path.cwd())
         self._available_paths: list[Path] = []
@@ -1052,8 +1071,8 @@ class FileImportDialog(QtWidgets.QDialog):
         self.folder_edit = QtWidgets.QLineEdit(str(self.current_directory))
         self.folder_edit.returnPressed.connect(self._set_directory_from_edit)
         browse_button = QtWidgets.QToolButton()
-        browse_button.setText("...")
-        browse_button.setToolTip("选择文件夹")
+        browse_button.setText("选择文件夹")
+        browse_button.setToolTip("浏览文件夹，可直接添加选中文件，也可只选择文件夹")
         browse_button.clicked.connect(self._browse_directory)
         refresh_button = QtWidgets.QToolButton()
         refresh_button.setText("刷新")
@@ -1119,7 +1138,7 @@ class FileImportDialog(QtWidgets.QDialog):
         picker_layout.addWidget(selected_panel, 1)
 
         self.count_label = QtWidgets.QLabel("")
-        self.import_button = QtWidgets.QPushButton("导入")
+        self.import_button = QtWidgets.QPushButton("开始导入")
         self.import_button.clicked.connect(self.accept)
         cancel_button = QtWidgets.QPushButton("取消")
         cancel_button.clicked.connect(self.reject)
@@ -1201,12 +1220,53 @@ class FileImportDialog(QtWidgets.QDialog):
         super().dropEvent(event)
 
     def _browse_directory(self) -> None:
-        directory = QtWidgets.QFileDialog.getExistingDirectory(self, "选择 SMP 文件夹", str(self.current_directory))
-        if not directory:
+        if sys.platform == "win32":
+            try:
+                selection = choose_import_files(int(self.winId()), self.current_directory, SUPPORTED_SMP_SUFFIXES)
+            except OSError as exc:
+                QtWidgets.QMessageBox.warning(self, "无法打开文件选择窗口", str(exc))
+                return
+            if selection is None:
+                return
+            selected_paths = selection.files
+            directory = selection.directory if not selected_paths else None
+        else:
+            dialog = ImportFilePicker(self, self.current_directory, SUPPORTED_SMP_SUFFIXES)
+            try:
+                if dialog.exec_() != QtWidgets.QDialog.Accepted:
+                    return
+                directory = dialog.chosen_directory
+                selected_paths = dialog.selectedFiles() if directory is None else []
+            finally:
+                dialog.deleteLater()
+
+        paths: list[Path] = []
+        rejected: list[Path] = []
+        for filename in selected_paths:
+            path = Path(filename)
+            if path.is_file() and path.suffix.lower() in SUPPORTED_SMP_SUFFIXES:
+                paths.append(path)
+            else:
+                rejected.append(path)
+        if rejected:
+            QtWidgets.QMessageBox.warning(
+                self, "部分文件未添加",
+                "以下文件不存在或格式不受支持，未加入待导入列表：\n" + "\n".join(str(path) for path in rejected),
+            )
+        if directory is None and not paths:
             return
-        self.current_directory = Path(directory)
-        self.folder_edit.setText(str(self.current_directory))
+        directory = Path(directory) if directory is not None else paths[0].parent
+        if not directory.is_dir():
+            QtWidgets.QMessageBox.warning(self, "文件夹不存在", str(directory))
+            return
+        if self.current_directory != directory:
+            self.search_edit.clear()
+        self.current_directory = directory
+        self._add_to_selected(paths)
         self._scan_directory()
+        if paths:
+            self.selected_table.scrollToBottom()
+            self.selected_table.setFocus()
 
     def _set_directory_from_edit(self) -> None:
         directory = Path(self.folder_edit.text().strip())
@@ -1375,7 +1435,7 @@ class FileImportDialog(QtWidgets.QDialog):
         return sorted({index.row() for index in table.selectionModel().selectedRows()})
 
 
-class MainWindow(QtWidgets.QMainWindow):
+class MainWindow(TelemetryUiMixin, QtWidgets.QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.result = None
@@ -1388,6 +1448,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sample_colors = list(DEFAULT_COLORS)
         self._updating_sample_checks = False
         self.test_time_sort_ascending = False
+        self.file_name_sort_ascending = False
         self.selected_pore_volume_sort_ascending = False
         self.region = None
         self.pressure_region_is_log = False
@@ -1452,6 +1513,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._available_update_info = None
         self.settings = QtCore.QSettings("DragonScience", "MercurySmpAnalyzerZh")
         self.import_directory = self._read_directory_setting("import_directory")
+        self.app_settings = AppSettings.from_settings(self.settings, self.import_directory)
         self._import_available_sort = (
             int(self.settings.value("import_available_sort_column", 0)),
             self._sort_order_from_setting(self.settings.value("import_available_sort_order", _qt_enum_int(QtCore.Qt.AscendingOrder))),
@@ -1465,6 +1527,14 @@ class MainWindow(QtWidgets.QMainWindow):
         open_button.clicked.connect(self.open_files)
         export_button = QtWidgets.QPushButton("导出文件")
         export_button.clicked.connect(self.export_xls)
+        self.settings_button = QtWidgets.QToolButton()
+        self.settings_button.setIcon(make_gear_icon())
+        self.settings_button.setIconSize(QtCore.QSize(20, 20))
+        self.settings_button.setFixedSize(28, 32)
+        self.settings_button.setAutoRaise(True)
+        self.settings_button.setCursor(QtCore.Qt.PointingHandCursor)
+        self.settings_button.setToolTip("软件设置")
+        self.settings_button.clicked.connect(self.show_app_settings)
         self.update_available_button = QtWidgets.QToolButton()
         self.update_available_button.setIcon(_make_update_available_icon(28))
         self.update_available_button.setIconSize(QtCore.QSize(24, 24))
@@ -1617,6 +1687,7 @@ class MainWindow(QtWidgets.QMainWindow):
         button_row.setSpacing(6)
         button_row.addWidget(open_button)
         button_row.addWidget(export_button)
+        button_row.addWidget(self.settings_button)
         button_row.addStretch(1)
         button_row.addWidget(self.update_available_button)
         button_row.addWidget(self.update_button)
@@ -1664,6 +1735,7 @@ class MainWindow(QtWidgets.QMainWindow):
         sample_header.sectionResized.connect(self._position_header_controls)
         self.sample_list.frozen_header().sectionResized.connect(self._position_header_controls)
         self.sample_list.horizontalHeaderItem(TEST_TIME_COLUMN).setToolTip("点击按测试时间排序")
+        self.sample_list.horizontalHeaderItem(FILE_COLUMN).setToolTip("点击按文件名排序（数字按大小），再次点击反向")
         self.sample_list.horizontalHeaderItem(ANGLE_COLUMN).setTextAlignment(QtCore.Qt.AlignCenter)
         self.sample_list.horizontalHeaderItem(TENSION_COLUMN).setTextAlignment(QtCore.Qt.AlignCenter)
         self.sample_list.verticalHeader().setVisible(False)
@@ -1765,6 +1837,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._on_selected_pore_volume_header_clicked
         )
         self.pore_structure_summary_table = self._make_pore_structure_summary_table()
+        self.pore_table_controller = PoreTableController(self, self.pore_structure_summary_table, NumericTableWidgetItem)
         self.detail_sample_hover_filters = []
         for table in (self.selected_pore_volume_table, self.pore_structure_summary_table):
             hover_filter = SampleRowHoverFilter(table)
@@ -1807,6 +1880,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._sync_select_all_state()
         QtCore.QTimer.singleShot(0, self._position_header_controls)
         QtCore.QTimer.singleShot(AUTO_UPDATE_CHECK_DELAY_MS, self._auto_check_for_updates)
+        self._init_telemetry()
+
+    def closeEvent(self, event) -> None:
+        self._close_telemetry()
+        super().closeEvent(event)
 
     def _auto_check_for_updates(self) -> None:
         self.check_for_updates(manual=False)
@@ -2148,6 +2226,16 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "导入失败", str(exc))
 
+    def show_app_settings(self) -> None:
+        dialog = AppSettingsDialog(
+            self, self.app_settings, APP_VERSION, import_directory=self.import_directory,
+        )
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return
+        self.app_settings = dialog.values()
+        self.app_settings.save(self.settings)
+        self.pore_table_controller.set_samples_as_columns(self.app_settings.samples_as_columns)
+
     def export_xls(self) -> None:
         selected_results = [
             result
@@ -2155,29 +2243,72 @@ class MainWindow(QtWidgets.QMainWindow):
             if visible
         ]
         if not selected_results:
-            QtWidgets.QMessageBox.information(self, "导出 XLS", "没有选中的 SMP 文件可导出。")
+            QtWidgets.QMessageBox.information(self, "导出文件", "没有选中的 SMP 文件可导出。")
             return
+        self._export_results(selected_results)
 
-        default_name = f"压汞导出_{len(selected_results)}个样品.xlsx"
-        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self,
-            "导出 XLS",
-            str(Path.cwd() / default_name),
-            "Excel 工作簿 (*.xlsx)",
+    def _export_results(self, selected_results, file_format: str | None = None) -> None:
+        from mercury_app.core.pdf_export import build_report_from_window, write_pdf
+
+        if not selected_results:
+            return
+        filters = {"xlsx": "Excel 工作簿 (*.xlsx)", "pdf": "PDF 报告 (*.pdf)"}
+        default_format = self.app_settings.export_format
+        offered = [file_format] if file_format in filters else [default_format] + [
+            key for key in filters if key != default_format
+        ]
+        default_name = f"压汞导出_{len(selected_results)}个样品.{offered[0]}"
+        file_path, chosen_filter = QtWidgets.QFileDialog.getSaveFileName(
+            self, "导出文件", str(self.app_settings.export_directory / default_name),
+            ";;".join(filters[key] for key in offered), filters[offered[0]],
         )
         if not file_path:
             return
-
+        dialog_path = file_path
+        suffix = Path(file_path).suffix.lower().lstrip(".")
+        if suffix not in offered:
+            suffix = next((key for key in offered if filters[key] == chosen_filter), offered[0])
+            file_path += f".{suffix}"
+        if file_path != dialog_path and Path(file_path).exists():
+            answer = QtWidgets.QMessageBox.question(
+                self, "确认覆盖", f"文件已存在，是否覆盖？\n{file_path}",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No,
+            )
+            if answer != QtWidgets.QMessageBox.Yes:
+                return
+        started = time.monotonic()
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
-            output_path = export_results_xlsx(selected_results, file_path)
+            # Flush pending selection updates before taking the export snapshot.
+            self.update_metrics()
+            self.update_mayer_stowe()
+            self.update_pore_structure()
+            report = build_report_from_window(self, selected_results, version=APP_VERSION, include_figures=suffix == "pdf")
+            if suffix == "pdf":
+                write_pdf(report, file_path)
+            else:
+                export_results_xlsx(
+                    selected_results, file_path, result_tables=report.tables[2:],
+                    samples_as_columns=self.app_settings.samples_as_columns,
+                )
         except Exception as exc:
+            QtWidgets.QApplication.restoreOverrideCursor()
+            self._record_telemetry(
+                "export", format=suffix, status="failure", error_code="write_error",
+                duration_ms=min(86400000, max(0, int((time.monotonic() - started) * 1000))),
+            )
             QtWidgets.QMessageBox.critical(self, "导出失败", str(exc))
             return
-
+        QtWidgets.QApplication.restoreOverrideCursor()
+        self.app_settings.export_directory = Path(file_path).parent
+        self.app_settings.save(self.settings)
+        self._record_telemetry(
+            "export", format=suffix, status="success", error_code="none",
+            duration_ms=min(86400000, max(0, int((time.monotonic() - started) * 1000))),
+        )
+        self.statusBar().showMessage(f"已导出: {file_path}", 6000)
         QtWidgets.QMessageBox.information(
-            self,
-            "导出完成",
-            f"已导出 {len(selected_results)} 个样品到：\n{output_path}",
+            self, "导出完成", f"已导出 {len(selected_results)} 个样品到：\n{file_path}",
         )
 
     def load_file(self, file_path: str | Path) -> None:
@@ -2185,7 +2316,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def load_files(self, file_paths) -> None:
         self._remove_region()
-        self.results = [load_smp(file_path) for file_path in file_paths]
+        self.results = [self._load_file_with_telemetry(file_path, load_smp) for file_path in file_paths]
         self.visible_results = [True] * len(self.results)
         self.active_index = 0
         self.result = self.results[0] if self.results else None
@@ -2195,7 +2326,7 @@ class MainWindow(QtWidgets.QMainWindow):
         existing_paths = {str(result.metadata.get("file_path", "")).lower() for result in self.results}
         new_results = []
         for file_path in file_paths:
-            result = load_smp(file_path)
+            result = self._load_file_with_telemetry(file_path, load_smp)
             key = str(result.metadata.get("file_path", "")).lower()
             if key not in existing_paths:
                 existing_paths.add(key)
@@ -2252,7 +2383,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 new_results.append(existing)
                 continue
             try:
-                result = load_smp(path)
+                result = self._load_file_with_telemetry(path, load_smp)
             except (OSError, ValueError) as exc:
                 errors.append(f"{path.name}: {exc}")
                 continue
@@ -2345,6 +2476,8 @@ class MainWindow(QtWidgets.QMainWindow):
         active_index: int | None = None,
         preserve_column_widths: bool = False,
     ) -> None:
+        for header in (self.sample_list.horizontalHeader(), self.sample_list.frozen_header()):
+            header.setSortIndicatorShown(False)
         column_widths = self._sample_column_widths() if preserve_column_widths else None
         horizontal_scroll_value = (
             self.sample_list.horizontalScrollBar().value() if preserve_column_widths else None
@@ -2387,18 +2520,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _rebuild_overview_tables(self) -> None:
         self.selected_pore_volume_table.setRowCount(len(self.results))
-        self.pore_structure_summary_table.setRowCount(len(self.results))
         for row, result in enumerate(self.results):
             sample_name = self._sample_row_label(result)
             name_item = QtWidgets.QTableWidgetItem(sample_name)
             name_item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable)
             self.selected_pore_volume_table.setItem(row, 0, name_item)
-            summary_name_item = QtWidgets.QTableWidgetItem(sample_name)
-            summary_name_item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable)
-            self.pore_structure_summary_table.setItem(row, 0, summary_name_item)
             volume_item = QtWidgets.QTableWidgetItem("")
             volume_item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
             self.selected_pore_volume_table.setItem(row, 1, volume_item)
+        self.pore_table_controller.refresh()
 
     def _sample_column_widths(self) -> list[int]:
         return [self.sample_list.columnWidth(column) for column in range(self.sample_list.columnCount())]
@@ -2412,7 +2542,11 @@ class MainWindow(QtWidgets.QMainWindow):
         scroll_bar = self.sample_list.horizontalScrollBar()
 
         def restore() -> None:
-            scroll_bar.setValue(max(scroll_bar.minimum(), min(int(value), scroll_bar.maximum())))
+            try:
+                scroll_bar.setValue(max(scroll_bar.minimum(), min(int(value), scroll_bar.maximum())))
+            except RuntimeError:
+                # The window may close before the queued restore is delivered.
+                return
 
         restore()
         QtCore.QTimer.singleShot(0, restore)
@@ -2483,9 +2617,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def show_sample_context_menu(self, position: QtCore.QPoint) -> None:
         index = self.sample_list.rowAt(position.y())
-        if index < 0:
-            return
         column = self.sample_list.columnAt(position.x())
+        if index < 0 or index >= len(self.results) or column < 0:
+            menu = QtWidgets.QMenu(self.sample_list)
+            clear_action = menu.addAction("清空列表")
+            clear_action.setEnabled(bool(self.results))
+            chosen = menu.exec_(self.sample_list.viewport().mapToGlobal(position))
+            if chosen == clear_action:
+                self.clear_sample_list()
+            return
 
         selected_rows = self._selected_sample_rows()
         if index not in selected_rows:
@@ -2528,12 +2668,25 @@ class MainWindow(QtWidgets.QMainWindow):
 
         delete_text = "删除" if len(selected_rows) <= 1 else f"删除选中 {len(selected_rows)} 个样品"
         delete_action = menu.addAction(delete_text)
+        menu.addSeparator()
+        excel_action = menu.addAction("导出选中样品 Excel…")
+        pdf_action = menu.addAction("导出选中样品 PDF…")
+        menu.addSeparator()
+        clear_action = menu.addAction("清空列表")
         global_position = self.sample_list.viewport().mapToGlobal(position)
         selected_action = menu.exec_(global_position) if hasattr(menu, "exec_") else menu.exec(global_position)
         if apply_action is not None and selected_action == apply_action:
             self.apply_sample_parameter_to_all(index, column)
         elif selected_action == delete_action:
             self.delete_samples(selected_rows)
+        elif selected_action == clear_action:
+            self.clear_sample_list()
+        elif selected_action in (excel_action, pdf_action):
+            self._export_results([self.results[row] for row in selected_rows], "xlsx" if selected_action == excel_action else "pdf")
+
+    def clear_sample_list(self) -> None:
+        self.delete_samples(range(len(self.results)))
+        self.statusBar().showMessage("已清空列表", 3000)
 
     def _selected_sample_rows(self) -> list[int]:
         rows = sorted({index.row() for index in self.sample_list.selectionModel().selectedRows()})
@@ -2548,17 +2701,25 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         active_result = self.result
+        self._expand_sample_colors()
         raw_region = self._current_pressure_region()
         mayer_region = self._current_mayer_pressure_region()
         self._remove_region()
         for index in reversed(rows):
+            self.pore_structure_options.pop(id(self.results[index]), None)
             del self.results[index]
             del self.visible_results[index]
+            if index < len(self.sample_colors):
+                del self.sample_colors[index]
 
-        if active_result in self.results:
-            target_index = self.results.index(active_result)
-        else:
-            target_index = min(rows[0], len(self.results) - 1) if self.results else 0
+        if not self.results:
+            self.sample_colors = list(DEFAULT_COLORS)
+            self.pore_structure_options.clear()
+
+        target_index = next(
+            (index for index, result in enumerate(self.results) if result is active_result),
+            min(rows[0], len(self.results) - 1) if self.results else 0,
+        )
         self.active_index = target_index
         self.result = self.results[target_index] if self.results else None
         self.setWindowTitle(APP_TITLE)
@@ -3089,15 +3250,29 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if len(self.results) < 2:
             return
-        if section == TEST_TIME_COLUMN:
+        if section == FILE_COLUMN:
+            self.file_name_sort_ascending = not self.file_name_sort_ascending
+            self.sort_samples_by_file_name(self.file_name_sort_ascending)
+        elif section == TEST_TIME_COLUMN:
             self.test_time_sort_ascending = not self.test_time_sort_ascending
             self.sort_samples_by_test_time(self.test_time_sort_ascending)
+        else:
+            return
+        order = QtCore.Qt.AscendingOrder if (
+            self.file_name_sort_ascending if section == FILE_COLUMN else self.test_time_sort_ascending
+        ) else QtCore.Qt.DescendingOrder
+        for header in (self.sample_list.horizontalHeader(), self.sample_list.frozen_header()):
+            header.setSortIndicator(section, order)
+            header.setSortIndicatorShown(True)
 
     def _on_selected_pore_volume_header_clicked(self, section: int) -> None:
         if section != 1 or len(self.results) < 2:
             return
         self.selected_pore_volume_sort_ascending = not self.selected_pore_volume_sort_ascending
         self.sort_samples_by_selected_pore_volume(self.selected_pore_volume_sort_ascending)
+
+    def sort_samples_by_file_name(self, ascending: bool) -> None:
+        self._sort_samples(lambda result: _natural_sort_key(self._sample_row_label(result)), ascending)
 
     def sort_samples_by_test_time(self, ascending: bool) -> None:
         self._sort_samples(lambda result: self._test_time_sort_key(result), ascending)
@@ -3107,6 +3282,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _sort_samples(self, key_func, ascending: bool) -> None:
         active_result = self.result
+        self._expand_sample_colors()
         pairs = []
         for index, result in enumerate(self.results):
             visible = self.visible_results[index] if index < len(self.visible_results) else True
@@ -3137,6 +3313,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         active_result = self.result
+        self._expand_sample_colors()
         moved_result = self.results.pop(source_index)
         moved_visible = self.visible_results.pop(source_index)
         moved_color = self.sample_colors.pop(source_index) if source_index < len(self.sample_colors) else None
@@ -3160,6 +3337,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.result = self.results[active_index] if self.results else None
         self._build_metric_tabs_with_options(active_index=active_index, preserve_column_widths=True)
         self._refresh_visibility_dependent_ui()
+
+    def _expand_sample_colors(self) -> None:
+        """Materialize the plot palette before reordering/removing sample rows."""
+        palette = self.sample_colors or list(DEFAULT_COLORS)
+        if len(palette) < len(self.results):
+            self.sample_colors = [palette[index % len(palette)] for index in range(len(self.results))]
+        elif not self.sample_colors:
+            self.sample_colors = list(DEFAULT_COLORS)
 
     @staticmethod
     def _test_time_sort_key(result) -> str:
@@ -3240,15 +3425,21 @@ class MainWindow(QtWidgets.QMainWindow):
             ):
                 previous_block = table.blockSignals(True)
                 try:
-                    for column in columns:
-                        item = table.item(row, column)
+                    items = (
+                        self.pore_table_controller.sample_items(row)
+                        if table is self.pore_structure_summary_table
+                        else [table.item(row, column) for column in columns]
+                    )
+                    for item in items:
                         if item is not None:
                             self._set_sample_item_hover(item, hovered)
                 finally:
                     table.blockSignals(previous_block)
                 table.viewport().update()
+                table.horizontalHeader().viewport().update()
                 if hasattr(table, "_frozen_table"):
                     table._frozen_table.viewport().update()
+                    table._frozen_table.horizontalHeader().viewport().update()
         finally:
             self._updating_sample_checks = was_updating
 
@@ -4960,45 +5151,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.update_pore_structure(refresh_pressure_plot=False)
 
     def _refresh_pore_structure_summary_table(self) -> None:
-        table = self.pore_structure_summary_table
-        table.setRowCount(len(self.results))
-        for row, result in enumerate(self.results):
-            name_item = QtWidgets.QTableWidgetItem(self._sample_row_label(result))
-            name_item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable)
-            table.setItem(row, 0, name_item)
-            if row < len(self.pore_structure_results):
-                analysis = self.pore_structure_results[row]
-                values = [
-                    (analysis.permeability_md, 4),
-                    (analysis.threshold_pressure_psia, 2),
-                    (analysis.characteristic_length_nm, 2),
-                    (analysis.conductivity_formation_factor, 4),
-                    (analysis.tortuosity_factor, 4),
-                    (analysis.tortuosity, 4),
-                ]
-            else:
-                values = [(float("nan"), 4)] * 6
-            summary = summary_metrics(result)
-            values = [
-                (summary.total_pore_area, 4),
-                (summary.bulk_density, 4),
-                (summary.apparent_density, 4),
-            ] + values
-            for column, (value, digits) in enumerate(values, start=1):
-                text = f"{value:.{digits}f}" if np.isfinite(value) else "—"
-                item = NumericTableWidgetItem(text, value)
-                item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable)
-                item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-                table.setItem(row, column, item)
-            table.setRowHeight(row, 28)
-        if self.pore_structure_sort_column >= 0 and table.rowCount() > 1:
-            order = (
-                QtCore.Qt.AscendingOrder
-                if self.pore_structure_sort_ascending
-                else QtCore.Qt.DescendingOrder
-            )
-            table.sortItems(self.pore_structure_sort_column, order)
-        self._apply_sample_row_hover(self._hovered_sample_row, True)
+        self.pore_table_controller.refresh()
 
     def _clear_mayer_stowe(self) -> None:
         self.mayer_stowe_results = []
@@ -5219,9 +5372,11 @@ def _app_icon() -> QtGui.QIcon:
 
 def run(argv: list[str] | None = None) -> int:
     _set_windows_app_id()
+    QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
     app = QtWidgets.QApplication(argv or sys.argv)
     app.setApplicationName("MercurySmpAnalyzerZh")
     app.setApplicationDisplayName("")
+    app.setStyle("windowsvista")
     app.setFont(QtGui.QFont("Microsoft YaHei UI", 9))
     icon = _app_icon()
     if not icon.isNull():

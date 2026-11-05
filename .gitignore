@@ -26,3 +26,11 @@ env/
 *.log
 *.tmp
 ~$*
+
+# Local telemetry configuration and collected records are never source files.
+telemetry_config.json
+telemetry_state.json
+*.sqlite3
+*.sqlite3-*
+telemetry_server/instance/
+telemetry_server/data/

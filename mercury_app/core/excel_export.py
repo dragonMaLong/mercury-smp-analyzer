@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import re
+import math
+import os
 from pathlib import Path
+import tempfile
 from typing import Sequence
 
 from .metrics import summary_metrics
 from .models import MercuryResult
 
 
-def export_results_xlsx(results: Sequence[MercuryResult], output_path: str | Path) -> Path:
+def export_results_xlsx(results: Sequence[MercuryResult], output_path: str | Path, *,
+                        result_tables=None, samples_as_columns: bool = True) -> Path:
     """将选中的计算结果导出到一个 Excel 工作簿。"""
     if not results:
         raise ValueError("没有选中的 SMP 结果可导出。")
@@ -36,16 +40,66 @@ def export_results_xlsx(results: Sequence[MercuryResult], output_path: str | Pat
     _write_summary_sheet(summary, results, header_fill, header_font, title_font, center_alignment)
 
     used_names = {"汇总"}
+    for table in result_tables or ():
+        sheet = workbook.create_sheet(_safe_sheet_name(table.title, used_names))
+        _write_analysis_sheet(sheet, table, samples_as_columns, header_fill, header_font)
     for result in results:
         sheet = workbook.create_sheet(_safe_sheet_name(result.metadata.get("file_name") or result.sample_name, used_names))
         _write_result_sheet(sheet, result, header_fill, header_font, title_font, center_alignment)
 
     for sheet in workbook.worksheets:
         _autofit_columns(sheet, get_column_letter)
+        # File names and metadata are literal text, even when they start with =.
+        # Missing scientific values are blank Excel cells rather than NaN/Inf.
+        for row in sheet:
+            for cell in row:
+                if isinstance(cell.value, str):
+                    cell.data_type = "s"
+                elif isinstance(cell.value, float) and not math.isfinite(cell.value):
+                    cell.value = None
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    workbook.save(output)
+    fd, temporary = tempfile.mkstemp(prefix=f".{output.stem}-", suffix=".xlsx", dir=output.parent)
+    os.close(fd)
+    try:
+        workbook.save(temporary)
+        os.replace(temporary, output)
+    finally:
+        workbook.close()
+        if os.path.exists(temporary):
+            os.unlink(temporary)
     return output
+
+
+def _write_analysis_sheet(sheet, table, samples_as_columns, header_fill, header_font):
+    if samples_as_columns:
+        sheet.append(["项目", *[label for label, _ in table.columns]])
+        for index, label in enumerate(table.row_labels):
+            sheet.append([label, *[_analysis_value(values[index]) if index < len(values) else None
+                                   for _, values in table.columns]])
+    else:
+        sheet.append(["样品", *table.row_labels])
+        for label, values in table.columns:
+            sheet.append([label, *[_analysis_value(value) for value in values]])
+    for cell in sheet[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+    for row in sheet.iter_rows(min_row=2, max_col=1):
+        row[0].font = header_font
+    sheet.freeze_panes = "B2"
+    if table.note:
+        sheet.append([])
+        sheet.append(["说明", table.note])
+
+
+def _analysis_value(value):
+    if value in (None, "", "—", "未记录"):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return value
+    return number if math.isfinite(number) else None
 
 
 def _write_summary_sheet(sheet, results, header_fill, header_font, title_font, center_alignment) -> None:
@@ -74,11 +128,14 @@ def _write_summary_sheet(sheet, results, header_fill, header_font, title_font, c
         "中值孔径（面积）(nm)",
         "中值压力（面积）(psia)",
         "平均孔径 4V/A (nm)",
-        "0.50 psia 体积密度 (g/mL)",
+        "起始进汞压力体积密度 (g/mL)",
         "表观骨架密度 (g/mL)",
         "孔隙率 (%)",
         "最大压力 (psia)",
         "数据点数",
+        "样品质量 (g)",
+        "膨胀计常数 (uL/pF)",
+        "体积密度对应压力 (psia)",
     ]
     start_row = 5
     for col, header in enumerate(headers, start=1):
@@ -113,9 +170,12 @@ def _write_summary_sheet(sheet, results, header_fill, header_font, title_font, c
         sheet.cell(row, 22, summary_metrics_result.porosity)
         sheet.cell(row, 23, result.max_pressure)
         sheet.cell(row, 24, result.data_point_count)
+        sheet.cell(row, 25, _number(result.metadata.get("sample_mass_g")))
+        sheet.cell(row, 26, _number(result.metadata.get("penetrometer_constant_uL_per_pF")))
+        sheet.cell(row, 27, summary_metrics_result.bulk_density_pressure)
 
     sheet.freeze_panes = "A6"
-    sheet.auto_filter.ref = f"A{start_row}:X{start_row + len(results)}"
+    sheet.auto_filter.ref = f"A{start_row}:AA{start_row + len(results)}"
 
 
 def _write_result_sheet(sheet, result: MercuryResult, header_fill, header_font, title_font, center_alignment) -> None:
@@ -131,6 +191,8 @@ def _write_result_sheet(sheet, result: MercuryResult, header_fill, header_font, 
         ("修改时间", _text(result.metadata.get("modified"))),
         ("测试仪器", _text(result.metadata.get("instrument_name"))),
         ("测试软件", _software_text(result)),
+        ("样品质量 (g)", _number(result.metadata.get("sample_mass_g"))),
+        ("膨胀计常数 (uL/pF)", _number(result.metadata.get("penetrometer_constant_uL_per_pF"))),
         ("进汞接触角 (deg)", _number(result.metadata.get("adv_contact_angle_deg"))),
         ("表面张力 (dynes/cm)", _number(result.metadata.get("surface_tension_dynes_cm"))),
         ("汞温度 (C)", _number(result.metadata.get("mercury_temperature_C"))),
@@ -192,7 +254,7 @@ def _safe_sheet_name(value, used_names: set[str]) -> str:
     base = base[:31]
     name = base
     counter = 2
-    while name in used_names:
+    while name.casefold() in {used.casefold() for used in used_names}:
         suffix = f"_{counter}"
         name = f"{base[:31 - len(suffix)]}{suffix}"
         counter += 1
