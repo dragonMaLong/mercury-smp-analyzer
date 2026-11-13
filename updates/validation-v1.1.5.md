@@ -1,10 +1,10 @@
-# v1.1.5 本地打包验收（2026-11-13）
+# v1.1.5 打包与发布验收（2026-11-13）
 
-本次交付为 Windows 单文件 EXE，本地输出到 `dist/release-v1.1.5`。保留 v1.1.4；未上传 GitHub/Gitee，未修改线上更新入口 `updates/latest.json`。版本目录里的 `latest.json` 只是候选清单，其远程下载地址尚未发布。
+本次交付为 Windows 单文件 EXE，本地输出到 `dist/release-v1.1.5`。GitHub 与 Gitee 均已发布，完整包与 Gitee 四分片均已通过无凭据公开下载校验；校验通过后才更新 `updates/latest.json`。本地 v1.1.4 保留。
 
 ## 构建与文件身份
 
-- 源码基线：`01d161ddbde8c813dfb48714b8bf868ba0ee8544`，加当前工作区未提交的交接改动及 1.1.5 版本更新；不能将基线提交单独视为完整构建源码。
+- 构建对应源码提交：`efdb32398e93d99816255a23f4ab2dddcf5b669b`。两平台 `v1.1.5` 标签均固定于此提交；发布清单与本记录在后续提交中同步，不移动标签。EXE 在提交前构建，提交前复核全部 29 个模块与冻结验收所记录的源码 SHA-256 一致。
 - 环境：`C:\build\venv-mip-1.1.3`，独立 CPython 3.12.3。
 - 依赖：numpy 1.26.4、scipy 1.13.1、PyQt5 5.15.10、pyqtgraph 0.14.0、openpyxl 3.1.2、PyInstaller 6.12.0、pyinstaller-hooks-contrib 2025.1。
 - 使用原 `压汞数据分析.spec`，构建时清理 Conda/Python/Qt 外部环境变量和 PATH。
@@ -16,7 +16,8 @@
 ## 验证结果
 
 - 全部 27 个测试文件：294 passed、9 skipped、0 failed。8 项跳过因 PDF 为图片无可提取文本，1 项因本地参考 SMP 缺失。
-- Windows 更新替换测试 12 项、分片测试 2 项通过。完整候选 EXE 的实际自动升级链路及两平台远程下载尚未执行，线上发布前仍需按 `docs/RELEASING.md` 验证。
+- Windows 更新替换测试 12 项、分片测试 2 项通过。正式未改动 v1.1.3 冻结客户端经界面触发下载完整 v1.1.5，验证助手 ready 握手、旧 onefile 父子进程退出、原路径替换、备份哈希、新版自动启动，以及关闭后原入口再次打开仍为 v1.1.5。隔离路径含中文、空格、单引号和 &。
+- 上述升级传输使用仅作用于 QA 子进程的 localhost 清单与下载服务；未改变系统代理、hosts 或系统证书。公开平台下载另行校验。另对正式 v1.1.1 完成隔离目录手动恢复，确认旧包备份、新包哈希、原入口启动与再次打开；不声称缺陷旧版内置更新器已修复。
 - 交接记录中的 3 项统计传输失败未复现；未推断历史失败原因。服务器测试依赖装于单独目录，未改变构建 venv。
 - 5 个样品的 EXE CSV 与源码导出逐字节相同。
 - 2513-1/2/3 总进汞量分别为 0.578399009 / 0.564778007 / 0.508278872 mL/g，按四位小数为 0.5784 / 0.5648 / 0.5083。
@@ -31,6 +32,15 @@
 
 沿用交接文档：MicroActive 7.00 另存的 SUBSET626 rev 19 和 Formula 校正类型尚不支持；9600 退汞段按用户确认的方式只扣一次空白；排除大孔区间后重算孔隙率尚未实现。
 
+## 发布资产与配额清理
+
+- [GitHub v1.1.5](https://github.com/dragonMaLong/mercury-smp-analyzer/releases/tag/v1.1.5)，Release ID `443811410`，提供完整 EXE。
+- [Gitee v1.1.5](https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/tag/v1.1.5)，Release ID `1304029`，提供完整 EXE 与四分片。
+- 两平台完整 EXE 的公开下载均为 92,841,726 字节，SHA-256 均与本记录一致。Gitee 四分片逐片大小/SHA-256 通过，按序合并的 SHA-256 也一致；不是仅以上传响应或附件列表作为下载成功证据。
+- Gitee 最初因仓库附件达到 1 GB 配额而拒绝上传。经用户明确批准，仅删除 v1.1.2 完整 EXE（附件 `3485451`）与 v1.1.3 完整 EXE（附件 `3601428`），释放 185,459,604 字节；清理后原有其他 16 个附件逐项核对不变。
+- 这两个旧版完整 EXE 的本地文件保留，大小/SHA-256 与各自发布清单一致；GitHub 完整包与 Gitee 四分片保留。旧 Gitee 完整包链接失效；本轮旧分片下载受网络超时影响，未将其列为本轮重新下载验证通过。
+- GitHub 先完成公开发布与下载验证；Gitee 在配额清理后完成附件上传及完整公开下载验证。两平台全部资产校验通过后，再同步公共更新清单。
+
 ## 证据
 
-本机 `build/release-v1.1.5-qa/` 保存构建脚本/日志、依赖记录、`frozen-validation.json`（含源码哈希和逐模块比对）、CSV 对照、`test-summary.json` 及逐文件测试日志。该目录被 Git 忽略。版本目录另附本验收记录、更新说明和 `SHA256SUMS.txt`。
+本机 `build/release-v1.1.5-qa/` 保存构建脚本/日志、依赖记录、`frozen-validation.json`（含源码哈希和逐模块比对）、CSV 对照、`test-summary.json`、`upgrade-summary.json`、`approved-gitee-cleanup-result.json`、两平台 `*-public-verification.json` 及逐文件测试日志。该目录被 Git 忽略。版本目录另附本验收记录、更新说明和 `SHA256SUMS.txt`。
