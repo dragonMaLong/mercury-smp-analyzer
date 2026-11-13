@@ -48,7 +48,7 @@ def test_detail_sample_row_hover_is_bidirectional_and_survives_redraw(applicatio
             ))
 
         for tab in (1, 2):
-            window.detail_tabs.setCurrentIndex(tab)
+            window.detail_tabs.setCurrentIndex(tab + 1)
             app.processEvents()
             table = window.selected_pore_volume_table if tab == 1 else window.pore_structure_summary_table
             if tab == 2:
@@ -90,7 +90,7 @@ def test_detail_sample_row_hover_is_bidirectional_and_survives_redraw(applicatio
 
         # Hover mapping still follows the reordered rows after sorting.
         window.sort_samples_by_test_time(False)
-        window.detail_tabs.setCurrentIndex(1)
+        window.detail_tabs.setCurrentWidget(window.selected_pore_volume_table)
         app.processEvents()
         hover(window.selected_pore_volume_table, 0, 0)
         assert all(item.font().bold() for item in row_items(0))

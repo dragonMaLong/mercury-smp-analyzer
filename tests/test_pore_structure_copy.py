@@ -16,7 +16,7 @@ def copy_window():
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     window = MainWindow()
     window.setAttribute(QtCore.Qt.WA_DontShowOnScreen)
-    window.detail_tabs.setCurrentIndex(2)
+    window.detail_tabs.setCurrentWidget(window.pore_structure_summary_table)
     table = window.pore_structure_summary_table
     table.setRowCount(3)
     for row in range(3):

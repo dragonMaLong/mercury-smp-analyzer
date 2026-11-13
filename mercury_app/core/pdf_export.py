@@ -410,7 +410,7 @@ def build_report_from_window(window, selected_results, version: str = "", *, inc
         return Table(title, rows, [(label, [_value(value) for value in sample_values])
                                    for label, sample_values in zip(labels, values)], note)
 
-    information = table("样品信息", ["文件", "样品名称", "测试人员", "提交者", "测试时间（创建）", "测试仪器", "测试软件", "样品质量 (g)", "膨胀计常数 (μL/pF)", "数据点数"],
+    information = table("样品信息", ["文件", "样品名称", "测试人员", "提交者", "测试时间", "测试仪器", "测试软件", "样品质量 (g)", "膨胀计常数 (μL/pF)", "数据点数"],
         [[r.metadata.get("file_name"), r.sample_name, r.metadata.get("operator"), r.metadata.get("submitter"),
           r.metadata.get("created"), r.metadata.get("instrument_name"),
           " ".join(str(r.metadata.get(key) or "") for key in ("analysis_software", "analysis_software_version")).strip() or r.metadata.get("software_version"),

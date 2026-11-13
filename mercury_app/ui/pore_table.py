@@ -48,11 +48,20 @@ class PoreTableController(QtCore.QObject):
     its existing numeric sorting and cell-copy handlers remain authoritative.
     """
 
-    def __init__(self, window, table, numeric_item_class):
+    def __init__(self, window, table, numeric_item_class, *, headers=None,
+                 sample_values=None, sort_handler=None):
+        """``headers`` starts with the sample column; ``sample_values(sample,
+        result)`` returns one (number, text) pair per remaining header, and
+        ``sort_handler(column)`` sorts the samples by that canonical column.
+        The defaults describe the pore-structure table.
+        """
         super().__init__(table)
         self.window = window
         self.table = table
         self.numeric_item_class = numeric_item_class
+        self.headers = tuple(headers or PORE_HEADERS)
+        self.sample_values = sample_values or self._pore_values
+        self.sort_handler = sort_handler or window._sort_pore_structure_summary
         self._refreshing = False
         self._parameter_click = None
         self._layout_signature = None
@@ -66,7 +75,7 @@ class PoreTableController(QtCore.QObject):
         table.currentCellChanged.connect(self._on_current_cell_changed)
         # The window's sorting handler expects the canonical metric column.
         try:
-            table.horizontalHeader().sectionClicked.disconnect(window._sort_pore_structure_summary)
+            table.horizontalHeader().sectionClicked.disconnect(self.sort_handler)
         except (TypeError, RuntimeError):
             pass
         for header in (table.horizontalHeader(), table.frozen_header()):
@@ -112,6 +121,10 @@ class PoreTableController(QtCore.QObject):
         self.table.horizontalScrollBar().setValue(0)
         self.table.verticalScrollBar().setValue(0)
         self.refresh()
+        # Every result table follows the one shared display setting.
+        for other in getattr(self.window, "result_table_controllers", ()):
+            if other is not self:
+                other.set_samples_as_columns(enabled)
 
     def position_buttons(self, *_args):
         for header, button in self.buttons:
@@ -136,7 +149,7 @@ class PoreTableController(QtCore.QObject):
             if 0 < column <= len(self.window.results):
                 self.window._select_sample_from_curve(column - 1)
         else:
-            self.window._sort_pore_structure_summary(column)
+            self.sort_handler(column)
 
     def sample_index_for_cell(self, row, column):
         sample = column - 1 if self.samples_as_columns else row
@@ -192,20 +205,29 @@ class PoreTableController(QtCore.QObject):
             if pending and index.isValid() and index.column() == 0 and index.row() == pending[0]:
                 self.table._selection_dragging = False
                 self.table.clearSelection()
-                self.window._sort_pore_structure_summary(index.row() + 1)
+                self.sort_handler(index.row() + 1)
                 return True
         elif kind == QtCore.QEvent.MouseButtonDblClick and index.isValid() and index.column() == 0:
             self._parameter_click = None
             return True
         return False
 
+    def _pore_values(self, sample, result):
+        summary = summary_metrics(result)
+        values = [(summary.total_pore_area, 4), (summary.bulk_density, 4), (summary.apparent_density, 4)]
+        results = self.window.pore_structure_results
+        analysis = results[sample] if sample < len(results) else None
+        values += [(getattr(analysis, attribute, float("nan")), digits) for attribute, digits in _PORE_ATTRIBUTES]
+        return [(value, f"{value:.{digits}f}" if math.isfinite(value) else "—") for value, digits in values]
+
     def refresh(self):
         table = self.table
         window = self.window
+        headers = self.headers
         transposed = self.samples_as_columns
         labels = (["参数"] + [window._sample_row_label(result) for result in window.results]
-                  if transposed else list(PORE_HEADERS))
-        row_count = len(PORE_HEADERS) - 1 if transposed else len(window.results)
+                  if transposed else list(headers))
+        row_count = len(headers) - 1 if transposed else len(window.results)
         signature = (transposed, tuple(id(result) for result in window.results))
         changed = signature != self._layout_signature
         self._refreshing = True
@@ -221,7 +243,7 @@ class PoreTableController(QtCore.QObject):
                 table._frozen_table.setColumnHidden(column, column > 0)
                 table.setColumnHidden(column, False)
             if transposed:
-                for row, title in enumerate(PORE_HEADERS[1:]):
+                for row, title in enumerate(headers[1:]):
                     item = QtWidgets.QTableWidgetItem(title)
                     item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable)
                     item.setToolTip("点击按此参数排序，再次点击反向")
@@ -231,12 +253,7 @@ class PoreTableController(QtCore.QObject):
                     item = QtWidgets.QTableWidgetItem(window._sample_row_label(result))
                     item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable)
                     table.setItem(sample, 0, item)
-                summary = summary_metrics(result)
-                values = [(summary.total_pore_area, 4), (summary.bulk_density, 4), (summary.apparent_density, 4)]
-                analysis = window.pore_structure_results[sample] if sample < len(window.pore_structure_results) else None
-                values += [(getattr(analysis, attribute, float("nan")), digits) for attribute, digits in _PORE_ATTRIBUTES]
-                for metric, (value, digits) in enumerate(values):
-                    text = f"{value:.{digits}f}" if math.isfinite(value) else "—"
+                for metric, (value, text) in enumerate(self.sample_values(sample, result)):
                     item = self.numeric_item_class(text, value)
                     item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable)
                     item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
@@ -249,7 +266,7 @@ class PoreTableController(QtCore.QObject):
                 for column, label in enumerate(labels):
                     width = max(126, metrics.horizontalAdvance(label) + 28)
                     if column == 0:
-                        width = max(160, *(metrics.horizontalAdvance(label) + 28 for label in PORE_HEADERS[1:])) if transposed else 150
+                        width = max(160, *(metrics.horizontalAdvance(label) + 28 for label in headers[1:])) if transposed else 150
                     table.setColumnWidth(column, min(380, width))
             table._update_frozen_geometry()
             self._layout_signature = signature

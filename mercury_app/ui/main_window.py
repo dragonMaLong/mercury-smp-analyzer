@@ -45,7 +45,8 @@ from mercury_app.ui.plots import (
 from mercury_app.version import __version__
 from mercury_app.core.export_settings import AppSettings
 from mercury_app.ui.export_settings import AppSettingsDialog, make_gear_icon
-from mercury_app.ui.pore_table import PoreTableController
+from mercury_app.ui.pore_table import PORE_HEADERS, PoreTableController
+from mercury_app.ui.analysis_table import ANALYSIS_HEADERS, analysis_values
 from mercury_app.ui.telemetry_ui import TelemetryUiMixin
 from mercury_app.ui.import_picker import ImportFilePicker
 from mercury_app.ui.native_import_picker import choose_import_files
@@ -315,6 +316,8 @@ class SampleTableWidget(QtWidgets.QTableWidget):
         self._drop_indicator.setFixedHeight(2)
         self._drop_indicator.setStyleSheet("background: #2563eb;")
         self._drop_indicator.hide()
+        # Both views share scrollbar values, so they must use the same units.
+        self.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
         self._init_frozen_columns()
 
     def frozen_header(self):
@@ -1487,6 +1490,11 @@ class MainWindow(TelemetryUiMixin, QtWidgets.QMainWindow):
         self._pore_structure_update_timer.timeout.connect(self._update_pore_structure_selection)
         self.pore_structure_sort_column = -1
         self.pore_structure_sort_ascending = True
+        self.analysis_sort_column = -1
+        self.analysis_sort_ascending = True
+        # SegmentMetrics of the selected pressure range, keyed by id(result).
+        self.segment_metrics = {}
+        self.result_table_controllers = []
         self.distribution_region = None
         self.distribution_region_is_log = False
         self.distribution_region_labels = []
@@ -1838,14 +1846,25 @@ class MainWindow(TelemetryUiMixin, QtWidgets.QMainWindow):
             self._on_selected_pore_volume_header_clicked
         )
         self.pore_structure_summary_table = self._make_pore_structure_summary_table()
+        self.analysis_result_table = self._make_sample_result_table(
+            ANALYSIS_HEADERS, self._sort_analysis_results, "分析结果")
         self.pore_table_controller = PoreTableController(self, self.pore_structure_summary_table, NumericTableWidgetItem)
+        self.analysis_table_controller = PoreTableController(
+            self, self.analysis_result_table, NumericTableWidgetItem,
+            headers=ANALYSIS_HEADERS,
+            sample_values=lambda _sample, result: analysis_values(result, self.segment_metrics.get(id(result))),
+            sort_handler=self._sort_analysis_results,
+        )
+        self.result_table_controllers = [self.pore_table_controller, self.analysis_table_controller]
         self.detail_sample_hover_filters = []
-        for table in (self.selected_pore_volume_table, self.pore_structure_summary_table):
+        for table in (self.selected_pore_volume_table, self.pore_structure_summary_table,
+                      self.analysis_result_table):
             hover_filter = SampleRowHoverFilter(table)
             hover_filter.sampleHovered.connect(self._on_sample_table_row_hovered)
             self.detail_sample_hover_filters.append(hover_filter)
         self.detail_tabs = QtWidgets.QTabWidget()
         self.detail_tabs.addTab(self.metrics_stack, "样品信息")
+        self.detail_tabs.addTab(self.analysis_result_table, "分析结果")
         self.detail_tabs.addTab(self.selected_pore_volume_table, "选区孔容")
         self.detail_tabs.addTab(self.pore_structure_summary_table, "孔结构")
 
@@ -2529,7 +2548,10 @@ class MainWindow(TelemetryUiMixin, QtWidgets.QMainWindow):
             volume_item = QtWidgets.QTableWidgetItem("")
             volume_item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
             self.selected_pore_volume_table.setItem(row, 1, volume_item)
-        self.pore_table_controller.refresh()
+        current = {id(result) for result in self.results}
+        self.segment_metrics = {key: value for key, value in self.segment_metrics.items() if key in current}
+        for controller in self.result_table_controllers:
+            controller.refresh()
 
     def _sample_column_widths(self) -> list[int]:
         return [self.sample_list.columnWidth(column) for column in range(self.sample_list.columnCount())]
@@ -2844,19 +2866,16 @@ class MainWindow(TelemetryUiMixin, QtWidgets.QMainWindow):
         return table
 
     def _make_pore_structure_summary_table(self) -> QtWidgets.QTableWidget:
-        headers = [
-            "样品",
-            "压汞比表面积 (m²/g)",
-            "体积密度 (g/mL)",
-            "骨架密度 (g/mL)",
-            "渗透率 (mdarcy)",
-            "阈值压力 (psia)",
-            "特征长度 (nm)",
-            "传导形成因子",
-            "曲折因子",
-            "曲折度",
-        ]
+        return self._make_sample_result_table(
+            PORE_HEADERS, self._sort_pore_structure_summary, "孔结构",
+            widths=(120, 160, 140, 140, 126, 130, 118, 126, 96, 90),
+        )
+
+    def _make_sample_result_table(self, headers, sort_slot, copy_name: str, widths=()) -> QtWidgets.QTableWidget:
+        """One row (or column) per sample, a frozen first column, copyable cells."""
+        headers = list(headers)
         table = FrozenFirstColumnTableWidget(0, len(headers))
+        table.copy_name = copy_name
         table.setHorizontalHeaderLabels(headers)
         table.verticalHeader().setVisible(False)
         table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
@@ -2865,13 +2884,14 @@ class MainWindow(TelemetryUiMixin, QtWidgets.QMainWindow):
         table._frozen_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectItems)
         table._frozen_table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-        table.customContextMenuRequested.connect(self._show_pore_structure_copy_menu)
+        table.customContextMenuRequested.connect(
+            lambda position, table=table: self._show_pore_structure_copy_menu(position, table))
         # QTableView otherwise selects a whole column on a header press.
         # Headers here trigger sorting; cell selection is reserved for copying.
         for header in (table.horizontalHeader(), table.frozen_header()):
             header.sectionPressed.disconnect()
             header.sectionEntered.disconnect()
-        table.horizontalHeader().sectionClicked.connect(self._sort_pore_structure_summary)
+        table.horizontalHeader().sectionClicked.connect(sort_slot)
         table.horizontalHeader().setSectionsClickable(True)
         table.horizontalHeader().setHighlightSections(False)
         table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
@@ -2897,15 +2917,31 @@ class MainWindow(TelemetryUiMixin, QtWidgets.QMainWindow):
         header_font = QtGui.QFont(table.horizontalHeader().font())
         header_font.setBold(True)
         header_metrics = QtGui.QFontMetrics(header_font)
-        for column, width in enumerate((120, 160, 140, 140, 126, 130, 118, 126, 96, 90)):
+        for column in range(len(headers)):
+            width = widths[column] if column < len(widths) else 126
             title_width = header_metrics.horizontalAdvance(headers[column]) + 20
             table.setColumnWidth(column, max(width, title_width, table.horizontalHeader().sectionSizeHint(column)))
         table._update_frozen_geometry()
         shortcut_class = getattr(QtGui, "QShortcut", None) or QtWidgets.QShortcut
         table.copy_shortcut = shortcut_class(QtGui.QKeySequence.Copy, table)
         table.copy_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
-        table.copy_shortcut.activated.connect(self._copy_pore_structure_selection)
+        table.copy_shortcut.activated.connect(lambda table=table: self._copy_pore_structure_selection(table))
         return table
+
+    def _sort_analysis_results(self, column: int) -> None:
+        if not 0 < column < len(ANALYSIS_HEADERS):
+            return
+        self.analysis_result_table.clearSelection()
+        if column == self.analysis_sort_column:
+            self.analysis_sort_ascending = not self.analysis_sort_ascending
+        else:
+            self.analysis_sort_column = int(column)
+            self.analysis_sort_ascending = True
+        values = {
+            id(result): analysis_values(result, self.segment_metrics.get(id(result)))[column - 1][0]
+            for result in self.results
+        }
+        self._sort_samples(lambda result: values.get(id(result), float("nan")), self.analysis_sort_ascending)
 
     def _sort_pore_structure_summary(self, column: int) -> None:
         if column == 0:
@@ -2947,8 +2983,8 @@ class MainWindow(TelemetryUiMixin, QtWidgets.QMainWindow):
             self.pore_structure_sort_ascending,
         )
 
-    def _show_pore_structure_copy_menu(self, position: QtCore.QPoint) -> None:
-        table = self.pore_structure_summary_table
+    def _show_pore_structure_copy_menu(self, position: QtCore.QPoint, table=None) -> None:
+        table = table or self.pore_structure_summary_table
         selected = table.selectedIndexes()
         if not selected:
             return
@@ -2972,10 +3008,10 @@ class MainWindow(TelemetryUiMixin, QtWidgets.QMainWindow):
         global_position = table.viewport().mapToGlobal(position)
         chosen = menu.exec_(global_position) if hasattr(menu, "exec_") else menu.exec(global_position)
         if chosen == action:
-            self._copy_pore_structure_selection()
+            self._copy_pore_structure_selection(table)
 
-    def _copy_pore_structure_selection(self) -> None:
-        table = self.pore_structure_summary_table
+    def _copy_pore_structure_selection(self, table=None) -> None:
+        table = table or self.pore_structure_summary_table
         selected = table.selectedIndexes()
         if not selected:
             return
@@ -2992,7 +3028,8 @@ class MainWindow(TelemetryUiMixin, QtWidgets.QMainWindow):
                 values.append(item.text() if item is not None and included else "")
             lines.append("\t".join(values))
         QtWidgets.QApplication.clipboard().setText("\n".join(lines))
-        self.statusBar().showMessage("已复制所选孔结构数据（含列名和样品名）", 2200)
+        name = getattr(table, "copy_name", "孔结构")
+        self.statusBar().showMessage(f"已复制所选{name}数据（含列名和样品名）", 2200)
 
     def _build_pore_structure_page(self) -> QtWidgets.QWidget:
         page = QtWidgets.QWidget()
@@ -3422,13 +3459,15 @@ class MainWindow(TelemetryUiMixin, QtWidgets.QMainWindow):
             for table, columns in (
                 (self.sample_list, range(1, self.sample_list.columnCount())),
                 (self.selected_pore_volume_table, range(self.selected_pore_volume_table.columnCount())),
-                (self.pore_structure_summary_table, range(self.pore_structure_summary_table.columnCount())),
+                (self.pore_structure_summary_table, ()),
+                (self.analysis_result_table, ()),
             ):
                 previous_block = table.blockSignals(True)
                 try:
+                    controller = next(
+                        (c for c in self.result_table_controllers if c.table is table), None)
                     items = (
-                        self.pore_table_controller.sample_items(row)
-                        if table is self.pore_structure_summary_table
+                        controller.sample_items(row) if controller is not None
                         else [table.item(row, column) for column in columns]
                     )
                     for item in items:
@@ -5178,84 +5217,43 @@ class MainWindow(TelemetryUiMixin, QtWidgets.QMainWindow):
         self._apply_active_sample_curve_selection()
 
     def _refresh_all_metric_tables(self, pressure_min: float, pressure_max: float) -> None:
+        self.segment_metrics = {
+            id(result): metrics_for_pressure_range(result, pressure_min, pressure_max)
+            for result in self.results
+        }
+        self.analysis_table_controller.refresh()
         for index, result in enumerate(self.results):
             if index >= len(self.metric_tables):
                 continue
             table = self.metric_tables[index]
-            metrics = metrics_for_pressure_range(result, pressure_min, pressure_max)
+            metrics = self.segment_metrics[id(result)]
             if index < self.selected_pore_volume_table.rowCount():
                 item = self.selected_pore_volume_table.item(index, 1)
                 if item is None:
                     item = QtWidgets.QTableWidgetItem()
                     self.selected_pore_volume_table.setItem(index, 1, item)
                 item.setText(f"{metrics.pore_volume:.6g}")
-            summary = summary_metrics(result)
-            rows = metrics.as_display_rows()
-
             summary_rows = [
                 ("文件", self._display_text(result.metadata.get("file_name"))),
                 ("样品名称", self._display_text(result.metadata.get("sample_name"))),
                 ("空白校正", result.metadata.get("blank_correction_label") or "无"),
                 ("测试人员", self._display_text(result.metadata.get("operator"))),
                 ("提交者", self._display_text(result.metadata.get("submitter"))),
-                ("测试时间（创建）", self._display_text(result.metadata.get("created"))),
+                ("测试时间", self._display_text(result.metadata.get("created"))),
                 ("测试仪器", self._display_text(result.metadata.get("instrument_name"))),
                 ("测试软件", self._software_display_text(result)),
                 (
                     "膨胀计常数",
                     f"{result.metadata.get('penetrometer_constant_uL_per_pF', 0.0):.6g} uL/pF",
                 ),
-                ("是否显示", "是" if self.visible_results[index] else "否"),
-                ("进汞接触角", self._metric_parameter_text(result, "adv_contact_angle_deg", "deg")),
-                ("表面张力", self._metric_parameter_text(result, "surface_tension_dynes_cm", "dynes/cm")),
                 ("样品质量", f"{result.metadata.get('sample_mass_g', 0.0):.6g} g"),
-                (
-                    "总入汞体积",
-                    f"{summary.total_intrusion_volume:.6g} mL/g @ {summary.total_intrusion_pressure:.6g} psia",
-                ),
-                (
-                    "总孔面积",
-                    f"{summary.total_pore_area:.6g} m^2/g @ {summary.total_intrusion_pressure:.6g} psia",
-                ),
-                (
-                    "中值孔径（体积）",
-                    self._summary_value_text(
-                        "{:.6g} nm @ {:.6g} psia, {:.6g} mL/g",
-                        summary.median_volume_diameter, summary.median_volume_pressure, summary.median_volume,
-                    ),
-                ),
-                (
-                    "中值孔径（面积）",
-                    self._summary_value_text(
-                        "{:.6g} nm @ {:.6g} psia, {:.6g} m^2/g",
-                        summary.median_area_diameter, summary.median_area_pressure, summary.median_area,
-                    ),
-                ),
-                (
-                    "平均孔径（4V/A）",
-                    self._summary_value_text("{:.6g} nm", summary.average_pore_diameter),
-                ),
-                (
-                    "体积密度",
-                    self._summary_value_text(
-                        "{:.6g} g/mL @ {:.2f} psia", summary.bulk_density, summary.bulk_density_pressure,
-                    ),
-                ),
-                (
-                    "表观骨架密度",
-                    self._summary_value_text(
-                        "{:.6g} g/mL @ {:.6g} psia", summary.apparent_density, summary.apparent_density_pressure,
-                    ),
-                ),
-                ("孔隙率", self._summary_value_text("{:.6g} %", summary.porosity)),
-                ("最大压力", f"{result.max_pressure:.6g} psia"),
                 ("数据点数", str(result.data_point_count)),
             ]
             for row_index in range(table.rowCount()):
                 table.removeCellWidget(row_index, 1)
-            table.setRowCount(len(summary_rows) + len(rows))
+            table.setRowCount(len(summary_rows))
 
-            for row_index, (name, value) in enumerate(summary_rows + rows):
+            for row_index, (name, value) in enumerate(summary_rows):
                 table.setItem(row_index, 0, QtWidgets.QTableWidgetItem(name))
                 item = QtWidgets.QTableWidgetItem(value)
                 table.setItem(row_index, 1, item)

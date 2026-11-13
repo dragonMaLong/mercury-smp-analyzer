@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from mercury_app.core.models import MercuryResult
+from mercury_app.ui.analysis_table import ANALYSIS_HEADERS
 from mercury_app.core.pore_structure import PoreStructureOptions, calculate_pore_structure
 
 
@@ -76,14 +77,22 @@ def test_invalid_summary_shows_dashes_without_warning_row(qt_runtime):
         window._refresh_all_metric_tables(10., 50.)
 
         values = {table.item(row, 0).text(): table.item(row, 1) for row in range(table.rowCount())}
-        # The sample information table does not list data warnings.
+        # The sample information table does not list data warnings or results.
         assert result.metadata["warnings"]
         assert "数据警告" not in values
         assert table.item(0, 0).text() == "文件"
-        assert values["孔隙率"].text() == "—"
-        assert values["表观骨架密度"].text() == "—"
-        assert values["总入汞体积"].text().startswith("-0.1 mL/g")
+        assert "孔隙率" not in values and "总入汞体积" not in values
         assert all("nan" not in item.text().lower() for item in values.values())
+
+        window.analysis_table_controller.set_samples_as_columns(True)
+        results = window.analysis_result_table
+        values = {name: results.item(row, 1).text() for row, name in enumerate(ANALYSIS_HEADERS[1:])}
+        assert values["孔隙率 (%)"] == "—"
+        assert values["表观骨架密度 (g/mL)"] == "—"
+        assert values["总入汞体积 (mL/g)"] == "-0.1"
+        assert values["最大压力 (psia)"] == "50"
+        assert not any("对应" in name for name in values)
+        assert all("nan" not in text.lower() for text in values.values())
     finally:
         window.close()
         qt_runtime.processEvents()

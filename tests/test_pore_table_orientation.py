@@ -133,7 +133,7 @@ def test_main_window_transposed_hover_copy_scroll_sort_and_clear(qt_runtime, cap
         for number, result in enumerate(window.results):
             result.metadata["file_name"] = f"样品{number + 1}.SMP"
         window.pore_table_controller.set_samples_as_columns(True)
-        window.detail_tabs.setCurrentIndex(2)
+        window.detail_tabs.setCurrentWidget(window.pore_structure_summary_table)
         window.show()
         qt_runtime.processEvents()
         table = window.pore_structure_summary_table

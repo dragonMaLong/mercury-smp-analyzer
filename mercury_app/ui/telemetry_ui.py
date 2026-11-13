@@ -124,9 +124,10 @@ class TelemetryUiMixin:
     def _record_feature_view(self, index: int, surface: str) -> None:
         features = (
             ("pore_distribution", "mayer_stowe", "pore_structure") if surface == "plot"
-            else ("sample_info", "selected_pore_volume", "pore_structure")
+            # "分析结果" has no category in the deployed protocol yet; it is not recorded.
+            else ("sample_info", None, "selected_pore_volume", "pore_structure")
         )
-        if 0 <= index < len(features):
+        if 0 <= index < len(features) and features[index] is not None:
             self._record_telemetry("feature_view", feature=features[index], surface=surface)
 
     def _load_file_with_telemetry(self, path, loader=None):

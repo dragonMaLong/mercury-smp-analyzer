@@ -46,7 +46,8 @@ def test_window_defaults_on_and_records_tabs_import_export_close(telemetry_windo
     assert client.enabled
     assert [entry["event"]["name"] for entry in client._queue] == ["startup"]
     window.analysis_tabs.setCurrentIndex(1)
-    window.detail_tabs.setCurrentIndex(2)
+    window.detail_tabs.setCurrentIndex(1)  # 分析结果: no protocol category, not recorded
+    window.detail_tabs.setCurrentIndex(3)
     sample = SimpleNamespace(data_point_count=3, metadata={"instrument_name": "AutoPore V 9620"})
     assert window._load_file_with_telemetry("PRIVATE-SAMPLE.smp", lambda path: sample) is sample
     window._record_telemetry("export", format="pdf", status="success", duration_ms=12, error_code="none")

@@ -81,6 +81,7 @@ def test_pore_structure_page_and_left_detail_tabs_exist() -> None:
         assert window.analysis_tabs.tabText(2) == "孔结构"
         assert [window.detail_tabs.tabText(i) for i in range(window.detail_tabs.count())] == [
             "样品信息",
+            "分析结果",
             "选区孔容",
             "孔结构",
         ]
