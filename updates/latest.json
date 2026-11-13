@@ -1,39 +1,39 @@
 {
-  "version": "v1.1.5",
-  "release_name": "MIP综合分析-DragonScience v1.1.5",
-  "asset_name": "MIP-DragonScience-v1.1.5.exe",
-  "release_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/tag/v1.1.5",
-  "download_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/download/v1.1.5/MIP-DragonScience-v1.1.5.exe",
-  "github_release_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/tag/v1.1.5",
-  "github_download_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/download/v1.1.5/MIP-DragonScience-v1.1.5.exe",
-  "gitee_release_url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/tag/v1.1.5",
+  "version": "v1.1.6",
+  "release_name": "MIP综合分析-DragonScience v1.1.6",
+  "asset_name": "MIP-DragonScience-v1.1.6.exe",
+  "release_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/tag/v1.1.6",
+  "download_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/download/v1.1.6/MIP-DragonScience-v1.1.6.exe",
+  "github_release_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/tag/v1.1.6",
+  "github_download_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/download/v1.1.6/MIP-DragonScience-v1.1.6.exe",
+  "gitee_release_url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/tag/v1.1.6",
   "gitee_download_parts": [
     {
-      "name": "MIP-DragonScience-v1.1.5.exe.part01",
-      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.5/MIP-DragonScience-v1.1.5.exe.part01",
-      "size": 23210432,
-      "sha256": "D41736D1073CB7FA4468A08357CF28563C60BF3559B389B19064E270F0BBC64B"
+      "name": "MIP-DragonScience-v1.1.6.exe.part01",
+      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.6/MIP-DragonScience-v1.1.6.exe.part01",
+      "size": 23211311,
+      "sha256": "BB0DAB6E1040906F6A4A82F1E29B54D98784A43E3EEB0B5B96E8135F7FF7B576"
     },
     {
-      "name": "MIP-DragonScience-v1.1.5.exe.part02",
-      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.5/MIP-DragonScience-v1.1.5.exe.part02",
-      "size": 23210432,
-      "sha256": "9CD3DC43CF560CF71D2922D21F3F412412314EC49F591C1814FDE1256737ABBA"
+      "name": "MIP-DragonScience-v1.1.6.exe.part02",
+      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.6/MIP-DragonScience-v1.1.6.exe.part02",
+      "size": 23211311,
+      "sha256": "D53D0190AF7C44A00F462022A27F6C72B1F79D574A18B9A4C4CCD439393AC86D"
     },
     {
-      "name": "MIP-DragonScience-v1.1.5.exe.part03",
-      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.5/MIP-DragonScience-v1.1.5.exe.part03",
-      "size": 23210432,
-      "sha256": "C869514CF7265FE6A4C9F00D970242CFDB3BB138BE9C835397B1A8FFE5BBC517"
+      "name": "MIP-DragonScience-v1.1.6.exe.part03",
+      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.6/MIP-DragonScience-v1.1.6.exe.part03",
+      "size": 23211311,
+      "sha256": "07B62DE1034D3AD4BC3B657B9719D73ECE7ADA50B058D3D3202E0E0C5DA5270A"
     },
     {
-      "name": "MIP-DragonScience-v1.1.5.exe.part04",
-      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.5/MIP-DragonScience-v1.1.5.exe.part04",
-      "size": 23210430,
-      "sha256": "5AAC505CBDB256687DD9E6C2172E9FAAFED522DE63C0002AEC0B0650C81CEB64"
+      "name": "MIP-DragonScience-v1.1.6.exe.part04",
+      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.6/MIP-DragonScience-v1.1.6.exe.part04",
+      "size": 23211311,
+      "sha256": "BE077BE9510B368D2A7731C6C78C1785C1AF5317C22153FCFBFB538C3532C422"
     }
   ],
-  "release_notes": "MIP综合分析-DragonScience v1.1.5\n\n- 支持旧版 AutoPore IV 9500 SMP 和新版 9600 SMP 的内嵌空白校正，导入时默认应用文件中记录的空白。\n- 样品信息新增“空白校正”下拉，可关闭校正、使用内嵌空白或选择其他空白 SMP 文件，切换后重新计算。\n- 进汞、退汞按各自分支校正；9600 退汞段按压力只扣除一次空白。\n- 修复 2513 系列样品未扣空白导致总进汞量异常的问题。\n- 完善旧版 SMP 的仪器序列号与测试时间；Excel 导出增加空白校正信息，采用高压结束时间作为修改时间。\n- 移除样品信息中的“数据警告”和 Excel 中的“数据提示”行，命令行保留诊断提示。\n\n已知限制：暂不支持 MicroActive 7.00 另存的 SUBSET626 rev 19 文件及 Formula 校正类型。\n\n旧版升级：v1.0.0、v1.1.0、v1.1.1 的内置更新器存在已知启动缺陷。请关闭旧程序，将完整新版 EXE 放到原程序路径并保留原文件名，再从原入口打开确认版本；v0.1.x 也需手动替换。\n",
+  "release_notes": "MIP综合分析-DragonScience v1.1.6\n\n- 新增“分析结果”页签，集中展示多个样品的进汞接触角、表面张力、总入汞体积、孔面积、孔径、密度和孔隙率等指标。\n- 分析结果随图中选区同步更新压力/孔径范围、孔容、孔容占比和峰值数据；“样品信息”保留样品元数据与空白校正选择。\n- 分析结果支持样品按行或按列排列，与孔结构表共享显示方向；支持参数排序、首列冻结、带样品名和列名复制，以及样品悬停联动。\n- 界面与 PDF 报告统一使用“测试时间”标签。\n- 修复表格纵向滚动时冻结列与数值行错位的问题。\n\n旧版升级：v1.0.0、v1.1.0、v1.1.1 的内置更新器存在已知启动缺陷。请关闭旧程序，将完整新版 EXE 放到原程序路径并保留原文件名，再从原入口打开确认版本；v0.1.x 也需手动替换。\n",
   "published_at": "2026-11-13",
-  "sha256": "482DDEE382429787681DC21DD5375EF321ED19E8F5DD2821F7CEBE18733E219B"
+  "sha256": "0BFACCBFDF70AB2B58F67B83178637382114C639E81B8DCDE1868A2F81F2A9CD"
 }
