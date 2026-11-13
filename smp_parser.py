@@ -12,7 +12,7 @@ smp_parser.py — Micromeritics AutoPore SMP 文件完整解析器
   汞密度记录格式：flag(1B) + temperature(8B) + density(8B)，每条17字节
 """
 
-import struct, math, csv, os, datetime, re
+import struct, math, csv, os, datetime, re, ntpath
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
 
@@ -25,9 +25,10 @@ from typing import List, Dict, Optional
 class MeasurementPoint:
     """单个压力点的原始测量值"""
     pressure_psia:   float
-    capacitance_pF:  float
-    timestamp:       float
-    mercury_density: float = None  # None=无实测记录
+    capacitance_pF:  Optional[float]
+    timestamp:       Optional[float]
+    mercury_density: Optional[float] = None  # None=无实测记录
+    intrusion_volume_mL: Optional[float] = None
 
 @dataclass
 class AnalysisResult:
@@ -37,7 +38,7 @@ class AnalysisResult:
     cumulative_volume_mLg:  float
     incremental_volume_mLg: float  # 退汞段为负值，原样保留
     mercury_density_gmL:    float
-    capacitance_pF:         float
+    capacitance_pF:         Optional[float]
 
 @dataclass
 class PenetrometerInfo:
@@ -73,6 +74,28 @@ class PressureStep:
     points_per_decade:  int = 0
 
 @dataclass
+class BlankCurve:
+    """Blank correction curve: embedded in SUBSET628 or built from a blank file.
+
+    ``points`` are (psia, value) in recorded order; the first ``intrusion_count``
+    points are the intrusion branch, the rest the extrusion branch. ``value`` is
+    absolute mL (legacy embedded curve, divided by the sample mass when applied)
+    or, when ``per_gram`` is set, mL per gram of the blank file's own mass.
+    """
+    reference_path: str
+    points: List[tuple]
+    intrusion_count: int
+    per_gram: bool = False
+
+    @property
+    def label(self) -> str:
+        return ntpath.basename(self.reference_path) or "内嵌空白"
+
+
+LegacyBlankCurve = BlankCurve
+
+
+@dataclass
 class SMPFile:
     """SMP 文件完整解析结果"""
     file_path:        str = ""
@@ -83,6 +106,10 @@ class SMPFile:
     penetrometer:     PenetrometerInfo = field(default_factory=PenetrometerInfo)
     instrument_name:  str   = ""
     instrument_model: str   = ""
+    instrument_serial: str  = ""
+    instrument_ports: str   = ""
+    # Legacy files: LP start, LP end, HP start, HP end (acquisition PC local time).
+    analysis_times: Dict[str, str] = field(default_factory=dict)
     analysis_software: str  = ""
     analysis_software_version: str = ""
     software_version: str   = ""
@@ -105,6 +132,15 @@ class SMPFile:
     lp_buffer_points: List[MeasurementPoint] = field(default_factory=list)
     pressure_program: List[PressureStep]     = field(default_factory=list)
     event_log:        List[str]              = field(default_factory=list)
+    measurement_basis: str = "capacitance_pF"
+    intrusion_point_count: Optional[int] = None
+    warnings: List[str] = field(default_factory=list)
+    # Legacy SUBSET628 +236: 1 = None, 2 = Blank (both checked in MicroActive 7.00).
+    correction_type_code: Optional[int] = None
+    blank_curve: Optional[BlankCurve] = None
+    # Runtime choice used by the calculation: "file" (the file's own setting),
+    # None (no correction) or a BlankCurve built from a user-selected blank file.
+    blank_selection: object = "file"
 
     _density_map:             Dict[float, float] = field(default_factory=dict)
     _raw_true_density_stored: float = 0.0
@@ -112,6 +148,9 @@ class SMPFile:
     @property
     def recovered_true_density_gmL(self) -> float:
         """修正 MicroActive bug 后的真实真密度（= 存储值 - 样品质量）"""
+        if self.measurement_basis == "intrusion_volume_mL":
+            # The legacy layout does not establish this MicroActive field.
+            return math.nan
         v = self._raw_true_density_stored - self.sample_mass_g
         return v if v > 0.01 else 1.0
 
@@ -132,6 +171,8 @@ class SMPParser:
         with open(filepath, "rb") as f:
             data = f.read()
 
+        if len(data) < 32:
+            raise ValueError("SMP 文件头不完整（至少需要 32 字节）")
         if data[2:11] != self.MAGIC:
             raise ValueError("不是有效的 SMP 文件")
 
@@ -141,9 +182,15 @@ class SMPParser:
 
         blocks = self._parse_directory(data)
 
+        if self._is_legacy_layout(data, blocks):
+            self._parse_legacy(data, blocks, smp)
+            return smp
+
         if 0x0272 in blocks: self._parse_subset626(data, blocks[0x0272], smp)
         if 0x0273 in blocks: self._parse_subset627(data, blocks[0x0273], smp)
-        if 0x0274 in blocks: self._parse_subset628(data, blocks[0x0274], smp)
+        if 0x0274 in blocks:
+            self._parse_subset628(data, blocks[0x0274], smp)
+            self._parse_modern_blank(data, blocks[0x0274], smp)
         if 0x0276 in blocks: self._parse_subset630(data, blocks[0x0276], smp)
         if 0x027A in blocks: self._parse_subset634(data, blocks[0x027A], smp)
         if 0x02C1 in blocks: self._parse_subset705(data, blocks[0x02C1], smp)
@@ -159,7 +206,7 @@ class SMPParser:
                   contact_angle_deg: float = None,
                   surface_tension_dynes_cm: float = None) -> List[AnalysisResult]:
         """
-        从原始电容计算孔体积和孔径。
+        按文件中记录的单位计算孔体积和孔径。
         输出原始值：退汞段增量为负值，原样保留，不做截断。
         """
         angle   = contact_angle_deg or smp.adv_contact_angle_deg
@@ -167,28 +214,38 @@ class SMPParser:
         k       = smp.penetrometer.constant_uL_per_pF
         mass    = smp.sample_mass_g
 
-        if k == 0:    raise ValueError("穿透计常数为 0")
-        if mass == 0: raise ValueError("样品质量为 0")
+        legacy = smp.measurement_basis == "intrusion_volume_mL"
+        if smp.measurement_basis not in {"intrusion_volume_mL", "capacitance_pF"}:
+            raise ValueError(f"不支持的测量单位: {smp.measurement_basis}")
+        if not math.isfinite(mass) or mass <= 0:
+            raise ValueError("样品质量必须为有限正数")
+        if not legacy and (not math.isfinite(k) or k <= 0):
+            raise ValueError("穿透计常数必须为有限正数")
 
-        results, prev_cap = [], None
+        results, prev_volume = [], None
         for pt in smp.raw_points:
-            vol_mLg  = pt.capacitance_pF * k / 1000.0 / mass
-            incr_mLg = (pt.capacitance_pF - prev_cap) * k / 1000.0 / mass \
-                       if prev_cap is not None else 0.0
+            raw_value = pt.intrusion_volume_mL if legacy else pt.capacitance_pF
+            if raw_value is None or not math.isfinite(raw_value):
+                raise ValueError("测量点缺少有效的体积或电容记录")
+            vol_mLg = raw_value / mass if legacy else raw_value * k / 1000.0 / mass
+            incr_mLg = vol_mLg - prev_volume if prev_volume is not None else 0.0
             results.append(AnalysisResult(
                 pressure_psia          = pt.pressure_psia,
-                pore_diameter_nm       = _washburn(pt.pressure_psia, angle, tension),
+                pore_diameter_nm       = (_washburn(pt.pressure_psia, angle, tension)
+                                          if pt.pressure_psia > 0 else math.nan),
                 cumulative_volume_mLg  = vol_mLg,
                 incremental_volume_mLg = incr_mLg,
                 mercury_density_gmL    = pt.mercury_density,
                 capacitance_pF         = pt.capacitance_pF,
             ))
-            prev_cap = pt.capacitance_pF
+            prev_volume = vol_mLg
         return results
 
     # ── 私有解析方法 ──────────────────────────────────────────────
 
     def _parse_header(self, data, smp):
+        if len(data) < 32:
+            raise ValueError("SMP 文件头不完整（至少需要 32 字节）")
         smp.version  = data[12:16].decode("ascii", errors="ignore").strip("\x00")
         fmt = "%Y-%m-%d %H:%M:%S"
         smp.created  = datetime.datetime.fromtimestamp(
@@ -198,17 +255,259 @@ class SMPParser:
 
     def _parse_directory(self, data):
         pos = data.find(b'SUBSET101')
-        if pos < 0: return {}
+        if pos < 0 or pos + 21 > len(data):
+            raise ValueError("SMP 目录 SUBSET101 缺失或不完整")
+        directory_size = struct.unpack_from("<I", data, pos + 14)[0]
+        self._validate_block(data, 101, pos, directory_size)
         n = struct.unpack_from("<H", data, pos + 19)[0]
+        if n == 0 or 3 + n * 10 > directory_size:
+            raise ValueError("SMP 目录记录数与目录长度不符")
         blocks = {}
-        for i in range(min(n, 50)):
+        intervals = [(pos, pos + 18 + directory_size, 101)]
+        for i in range(n):
             base    = pos + 21 + i * 10
             type_id = struct.unpack_from("<H", data, base)[0]
             offset  = struct.unpack_from("<I", data, base + 2)[0]
             size    = struct.unpack_from("<I", data, base + 6)[0]
-            if 0 < offset < len(data) and 0 < size <= len(data) - offset:
-                blocks[type_id] = (offset, size)
+            if type_id in blocks or type_id == 101:
+                raise ValueError(f"SMP 目录包含重复的 SUBSET{type_id}")
+            self._validate_block(data, type_id, offset, size)
+            blocks[type_id] = (offset, size)
+            intervals.append((offset, offset + 18 + size, type_id))
+        intervals.sort()
+        for previous, current in zip(intervals, intervals[1:]):
+            if current[0] < previous[1]:
+                raise ValueError(f"SMP 数据块重叠: SUBSET{previous[2]} / SUBSET{current[2]}")
         return blocks
+
+    @staticmethod
+    def _validate_block(data, type_id, offset, size):
+        # Directory sizes describe the payload; the block header adds 18 bytes.
+        if offset < 32 or size < 1 or offset + 18 + size > len(data):
+            raise ValueError(f"SMP 数据块 SUBSET{type_id} 越界或被截断")
+        expected_tag = f"SUBSET{type_id:03d}\0".encode("ascii")
+        header_id, header_size = struct.unpack_from("<HI", data, offset + 12)
+        if (data[offset:offset + 10] != expected_tag
+                or header_id != type_id or header_size != size):
+            raise ValueError(f"SMP 目录与 SUBSET{type_id} 块头不一致")
+
+    @staticmethod
+    def _is_legacy_layout(data, blocks):
+        # Both signatures are required. A partial match must not fall through
+        # to the modern scanner and manufacture capacitance records.
+        sample = blocks.get(626)
+        measurements = blocks.get(630)
+        old_sample = sample is not None and (sample[1] == 924 or data[sample[0] + 18] == 7)
+        old_measurements = measurements is not None and data[measurements[0] + 18] == 2
+        if not (old_sample or old_measurements):
+            return False
+        expected = {626: (7, 924), 627: (1, None), 628: (2, None), 630: (2, None)}
+        for type_id, (revision, size) in expected.items():
+            block = blocks.get(type_id)
+            if block is None:
+                raise ValueError(f"旧版 SMP 缺少必要数据块 SUBSET{type_id}")
+            if data[block[0] + 18] != revision or (size is not None and block[1] != size):
+                raise ValueError(f"不支持的旧版 SMP 布局: SUBSET{type_id}")
+        return True
+
+    def _parse_legacy(self, data, blocks, smp):
+        """Verified ASCII rev-7 sample / rev-2 16-byte volume-record layout.
+
+        Offsets below include each 18-byte SUBSET header. The second double
+        is absolute mL, independently checked against an original IV report.
+        It must never be treated as capacitance. Original blank corrections
+        and report options are not reconstructed from this layout.
+        """
+        def read(type_id, rel, fmt):
+            offset, size = blocks[type_id]
+            if rel < 18 or rel + struct.calcsize(fmt) > size + 18:
+                raise ValueError(f"旧版 SMP 的 SUBSET{type_id} 参数被截断")
+            return struct.unpack_from(fmt, data, offset + rel)
+
+        def text_field(type_id, start, end):
+            offset, size = blocks[type_id]
+            if not (18 <= start < end <= size + 18):
+                raise ValueError(f"旧版 SMP 的 SUBSET{type_id} 文本字段被截断")
+            value = data[offset + start:offset + end].split(b"\0", 1)[0]
+            return value.decode("ascii", errors="replace").strip()
+
+        def number(type_id, rel, label, *, allow_zero=False):
+            value = read(type_id, rel, "<d")[0]
+            if not math.isfinite(value) or value < 0 or (value == 0 and not allow_zero):
+                raise ValueError(f"旧版 SMP 的{label}必须为有限{'非负数' if allow_zero else '正数'}")
+            return value
+
+        smp.measurement_basis = "intrusion_volume_mL"
+        smp.sample_mass_g = number(626, 19, "样品质量")
+        smp.assembly_mass_g = number(626, 751, "组件质量")
+        smp.sample_name = text_field(626, 29, 80)
+        smp.operator = text_field(626, 80, 101)
+        smp.material.name = text_field(626, 875, 896)
+        smp.material.true_density_gmL = math.nan
+        smp.mercury_temperature_C = math.nan
+
+        smp.penetrometer.model = text_field(628, 19, 115)
+        for rel, attr, label in (
+            (115, "constant_uL_per_pF", "穿透计常数"),
+            (123, "mass_g", "穿透计质量"),
+            (131, "bulb_volume_mL", "球泡体积"),
+            (139, "stem_volume_mL", "茎管体积"),
+            (147, "max_head_psia", "最大头压"),
+        ):
+            setattr(smp.penetrometer, attr, number(628, rel, label, allow_zero=True))
+        for rel, attr, label in (
+            (298, "adv_contact_angle_deg", "前进接触角"),
+            (306, "rec_contact_angle_deg", "后退接触角"),
+            (314, "surface_tension_dynes_cm", "表面张力"),
+            (322, "mercury_density_gmL", "汞密度"),
+        ):
+            value = number(627, rel, label)
+            if "angle" in attr and value > 180:
+                raise ValueError(f"旧版 SMP 的{label}超出 180 度")
+            setattr(smp, attr, value)
+
+        count, intrusion_count = read(630, 229, "<IH")
+        if count == 0 or blocks[630][1] != 217 + 16 * count:
+            raise ValueError("旧版 SMP 测量点数与 SUBSET630 长度不符")
+        if not 1 <= intrusion_count <= count:
+            raise ValueError("旧版 SMP 的进汞点数超出总测量点数")
+        smp.intrusion_point_count = intrusion_count
+        # SUBSET630: LP / HP instrument serial (ASCII, +84 / +116) and ports
+        # (uint16, +148 / +150); SUBSET100 carries the instrument family tag.
+        # Checked against vendor report headers ("Serial # 830  Port 1/1",
+        # "Serial # 1404  Port 2/2").
+        smp.instrument_serial = text_field(630, 84, 116) or text_field(630, 116, 148)
+        lp_port, hp_port = read(630, 148, "<HH")
+        if 0 < lp_port < 100 and 0 < hp_port < 100:
+            smp.instrument_ports = f"{lp_port}/{hp_port}"
+        # Four C "struct tm" records (9 x uint16) in acquisition-PC local time.
+        # LP end / HP end equal the vendor reports' LP / HP Analysis Time. The
+        # file header timestamp is not used for legacy files: the IV 9500
+        # software encodes local time as if it were US Eastern time.
+        for name, rel in (("lp_start", 154), ("lp_end", 172), ("hp_start", 190), ("hp_end", 208)):
+            sec, minute, hour, day, month, year, *_ = read(630, rel, "<9H")
+            try:
+                stamp = datetime.datetime(1900 + year, month + 1, day, hour, minute, sec)
+            except ValueError:
+                continue
+            if year >= 80:
+                smp.analysis_times[name] = stamp.strftime("%Y-%m-%d %H:%M:%S")
+        times = smp.analysis_times
+        if "lp_start" in times or "hp_start" in times:
+            smp.created = times.get("lp_start") or times["hp_start"]
+            smp.modified = times.get("hp_end") or times.get("lp_end") or smp.created
+        if 100 in blocks:
+            offset, size = blocks[100]
+            tag = re.search(rb"(?<![0-9A-Za-z])9[0-9]{1,2}[0-9X]{2}(?![0-9A-Za-z])",
+                            data[offset + 18:offset + 18 + size])
+            if tag:
+                smp.instrument_model = tag.group().decode("ascii")
+        for index in range(count):
+            pressure, volume = read(630, 235 + index * 16, "<dd")
+            if not math.isfinite(pressure) or not math.isfinite(volume):
+                raise ValueError(f"旧版 SMP 第 {index + 1} 个测量点包含非有限数值")
+            smp.raw_points.append(MeasurementPoint(
+                pressure_psia=pressure, capacitance_pF=None, timestamp=None,
+                mercury_density=smp.mercury_density_gmL, intrusion_volume_mL=volume,
+            ))
+        self._parse_legacy_blank(data, blocks[628], smp)
+        smp.warnings.append("旧版 SMP 保存压力与未经空白校正的绝对进汞体积（mL），不应用电容常数或额外头压修正。")
+        if smp.blank_curve is not None:
+            smp.warnings.append(
+                f"文件含空白校正设置及内嵌空白曲线（{smp.blank_curve.reference_path or '未记录路径'}，"
+                f"{len(smp.blank_curve.points)} 点）；原始记录保持未校正。")
+        elif smp.correction_type_code not in (None, 1):
+            smp.warnings.append(
+                f"文件记录的校正类型代码为 {smp.correction_type_code}，尚未验证其含义，未应用任何校正。")
+        smp.warnings.append("旧版文件只记录仪器系列代号和序列号，软件版本及真密度未知。")
+        nonpositive_pressure = sum(point.pressure_psia <= 0 for point in smp.raw_points)
+        if nonpositive_pressure:
+            smp.warnings.append(f"原始数据含 {nonpositive_pressure} 个非正压力点；保留原始记录，这些点不能计算孔径。")
+        negative_volume = sum(point.intrusion_volume_mL < 0 for point in smp.raw_points)
+        if negative_volume:
+            smp.warnings.append(f"原始数据含 {negative_volume} 个负进汞体积点，已保留符号，需核对原始实验和校正设置。")
+
+    @staticmethod
+    def _parse_legacy_blank(data, block, smp):
+        """SUBSET628 rev 2 tail (offsets include the 18-byte header).
+
+        +155..+236 NUL-terminated blank file path on the acquisition PC
+        +236 uint8 correction type (1 = None, 2 = Blank; others unverified)
+        +238 uint16 blank point count N, +242 uint16 blank intrusion count
+        +244 N x <dd> (psia, mL), ending exactly at the block end.
+        """
+        offset, size = block
+        end = offset + 18 + size
+        if end < offset + 237:
+            return
+        smp.correction_type_code = data[offset + 236]
+        if smp.correction_type_code != 2:
+            return
+        if end < offset + 244:
+            raise ValueError("旧版 SMP 声明了空白校正，但 SUBSET628 缺少空白曲线")
+        count, intrusion_count = struct.unpack_from("<H2xH", data, offset + 238)
+        if count < 2 or offset + 244 + 16 * count != end or not 1 <= intrusion_count <= count:
+            raise ValueError("旧版 SMP 的空白曲线长度与 SUBSET628 不符")
+        points = [struct.unpack_from("<dd", data, offset + 244 + 16 * i) for i in range(count)]
+        if not all(math.isfinite(p) and math.isfinite(v) for p, v in points):
+            raise ValueError("旧版 SMP 的空白曲线包含非有限数值")
+        path = data[offset + 155:offset + 236].split(b"\0", 1)[0]
+        smp.blank_curve = BlankCurve(
+            reference_path=path.decode("ascii", errors="replace").strip(),
+            points=points,
+            intrusion_count=intrusion_count,
+        )
+
+    @staticmethod
+    def _parse_modern_blank(data, block, smp):
+        """SUBSET628 rev 3 tail, located from the block end (path is variable length).
+
+        No blank: ... [rev u8][code u16 = 1][N u32 = 0]
+        Blank:    UTF-16 path NUL, [rev u8][code u16 = 2][N u32][M u16],
+                  then N x <ddd> (psia, x, 0) to the block end, where
+                  -x * penetrometer constant / 1000 is the blank volume in mL per
+                  gram of the blank file's mass. Layout taken from a file saved
+                  by MicroActive 7.00 after "Select Blank"; intrusion results
+                  were checked against its tabular report.
+        """
+        offset, size = block
+        full = data[offset:offset + 18 + size]
+        length = len(full)
+        if length < 26:
+            return
+        revision = full[18]
+        if full[length - 7] == revision and full[length - 4:] == b"\0\0\0\0":
+            smp.correction_type_code = struct.unpack_from("<H", full, length - 6)[0]
+            return
+        for count in range(1, (length - 28) // 24 + 1):
+            pos = length - 24 * count - 9
+            if pos < 21:
+                break
+            if full[pos] != revision or full[pos - 2:pos] != b"\0\0":
+                continue
+            code, declared, split = struct.unpack_from("<HIH", full, pos + 1)
+            if declared != count or not 1 <= split <= count:
+                continue
+            smp.correction_type_code = code
+            if code != 2:
+                return
+            k = smp.penetrometer.constant_uL_per_pF
+            records = [struct.unpack_from("<ddd", full, pos + 9 + 24 * i) for i in range(count)]
+            if not (math.isfinite(k) and k > 0) or not all(
+                    math.isfinite(p) and math.isfinite(x) for p, x, _ in records):
+                raise ValueError("SMP 的内嵌空白曲线或膨胀计常数无效")
+            start = pos - 2
+            while start >= 20 and full[start - 1] == 0 and 32 <= full[start - 2] < 127:
+                start -= 2
+            smp.blank_curve = BlankCurve(
+                reference_path=full[start:pos - 2].decode("utf-16le", errors="replace").strip(),
+                points=[(p, -x * k / 1000.0) for p, x, _ in records],
+                intrusion_count=split,
+                per_gram=True,
+            )
+            smp.warnings.append(
+                f"文件含空白校正设置及内嵌空白曲线（{smp.blank_curve.label}，{count} 点）。")
+            return
 
     def _parse_subset626(self, data, block, smp):
         """
@@ -574,6 +873,54 @@ def _linear_interpolate(x, x_values, y_values):
     return y_values[-1]
 
 
+def _akima_slopes(xs, ys):
+    m = [(ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]) for i in range(len(xs) - 1)]
+    if len(m) == 1:
+        return [m[0], m[0]]
+    # Akima (1970) end extrapolation of segment slopes.
+    mm = [3 * m[0] - 2 * m[1], 2 * m[0] - m[1], *m, 2 * m[-1] - m[-2], 3 * m[-1] - 2 * m[-2]]
+    slopes = []
+    for i in range(len(xs)):
+        m1, m2, m3, m4 = mm[i:i + 4]
+        w1, w2 = abs(m4 - m3), abs(m2 - m1)
+        slopes.append((m2 + m3) / 2 if w1 + w2 == 0 else (w1 * m2 + w2 * m3) / (w1 + w2))
+    return slopes
+
+
+def blank_curve_value(curve: BlankCurve, pressure_psia: float, extrusion: bool) -> float:
+    """Blank value (in the curve's own unit) at a sample pressure, on the matching branch.
+
+    Reproduces MicroActive 7.00 for the 2513-1/2/3 IV files: Akima spline in
+    linear pressure, each interval clamped to its endpoint values, constant
+    outside the branch. The extrusion branch excludes the blank's
+    maximum-pressure point. Checked point by point against the vendor tabular
+    report: intrusion within 2e-6 mL/g, extrusion within 1.5e-5 mL/g.
+    """
+    split = curve.intrusion_count
+    branch = curve.points[split:] if extrusion else curve.points[:split]
+    if not branch:
+        branch = curve.points[split - 1:split]
+    xs, ys = [], []
+    for p, v in sorted(branch, key=lambda item: item[0]):
+        if not xs or p > xs[-1]:
+            xs.append(p)
+            ys.append(v)
+    if pressure_psia <= xs[0]:
+        return ys[0]
+    if pressure_psia >= xs[-1]:
+        return ys[-1]
+    t = _akima_slopes(xs, ys)
+    j = max(i for i in range(len(xs) - 1) if xs[i] <= pressure_psia)
+    h = xs[j + 1] - xs[j]
+    s = (pressure_psia - xs[j]) / h
+    y = ((2 * s**3 - 3 * s**2 + 1) * ys[j] + (s**3 - 2 * s**2 + s) * h * t[j]
+         + (-2 * s**3 + 3 * s**2) * ys[j + 1] + (s**3 - s**2) * h * t[j + 1])
+    return min(max(y, min(ys[j], ys[j + 1])), max(ys[j], ys[j + 1]))
+
+
+legacy_blank_volume_mL = blank_curve_value
+
+
 def _washburn(pressure_psia, contact_angle_deg, surface_tension_dynes_cm):
     P_pa  = pressure_psia * 6894.757
     theta = math.radians(contact_angle_deg)
@@ -721,7 +1068,13 @@ def export_csv(results: List[AnalysisResult],
             w.writerow(["# 样品质量",   f"{smp.sample_mass_g} g"])
             w.writerow(["# 接触角",     f"{smp.adv_contact_angle_deg} °"])
             w.writerow(["# 表面张力",   f"{smp.surface_tension_dynes_cm} dynes/cm"])
-            w.writerow(["# 注：压力为传感器原始值，未做汞柱头压修正"])
+            if smp.measurement_basis == "intrusion_volume_mL":
+                w.writerow(["# 测量单位", "文件内绝对进汞体积（mL），除以样品质量得到 mL/g"])
+                w.writerow(["# 注：保留文件内压力及体积，不应用电容常数或额外头压修正"])
+                for warning in smp.warnings:
+                    w.writerow(["# 提示", warning])
+            else:
+                w.writerow(["# 注：压力为传感器原始值，未做汞柱头压修正"])
             w.writerow([])
         w.writerow([
             "Pressure (psia)", "Pore Diameter (nm)",
@@ -733,7 +1086,7 @@ def export_csv(results: List[AnalysisResult],
             w.writerow([
                 f"{r.pressure_psia:.6f}",
                 f"{r.pore_diameter_nm:.3f}",
-                f"{r.capacitance_pF:.6f}",
+                f"{r.capacitance_pF:.6f}" if r.capacitance_pF is not None else "",
                 f"{r.cumulative_volume_mLg:.9f}",
                 f"{r.incremental_volume_mLg:.9f}",
                 dens,

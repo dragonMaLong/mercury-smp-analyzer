@@ -2,7 +2,7 @@
 
 from .excel_export import export_results_xlsx
 from .mayer_stowe import MayerStoweResult, calculate_mayer_stowe, lookup_mayer_stowe_k
-from .microactive_calc import calculate_microactive, export_microactive_csv, load_smp
+from .microactive_calc import blank_curve_from_smp, calculate_microactive, export_microactive_csv, load_smp
 from .metrics import metrics_for_pressure_range, summary_metrics
 from .models import MercuryResult, PoreSummary, SegmentMetrics
 from .pore_structure import (
@@ -19,6 +19,7 @@ __all__ = [
     "PoreStructureOptions",
     "PoreStructureResult",
     "SegmentMetrics",
+    "blank_curve_from_smp",
     "calculate_microactive",
     "calculate_mayer_stowe",
     "calculate_pore_structure",

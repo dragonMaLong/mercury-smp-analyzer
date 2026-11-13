@@ -185,6 +185,7 @@ def _write_result_sheet(sheet, result: MercuryResult, header_fill, header_font, 
 
     metadata_rows = [
         ("样品名称", _text(result.metadata.get("sample_name"))),
+        ("空白校正", result.metadata.get("blank_correction_label") or "无"),
         ("测试人员", _text(result.metadata.get("operator"))),
         ("提交者", _text(result.metadata.get("submitter"))),
         ("创建时间", _text(result.metadata.get("created"))),

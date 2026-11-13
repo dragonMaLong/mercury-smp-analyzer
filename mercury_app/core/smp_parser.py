@@ -11,6 +11,8 @@ from smp_parser import (  # Reuse the currently validated reverse-engineered par
     SMPFile,
     SMPParser,
     _washburn,
+    BlankCurve,
+    blank_curve_value,
 )
 
 
@@ -28,6 +30,8 @@ __all__ = [
     "SMPFile",
     "SMPParser",
     "_washburn",
+    "BlankCurve",
+    "blank_curve_value",
     "parse_smp",
 ]
 

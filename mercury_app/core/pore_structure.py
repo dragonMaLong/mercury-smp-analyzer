@@ -102,6 +102,8 @@ def calculate_pore_structure(
         return _empty_result(result.sample_name, "有效进汞数据点不足。")
 
     total_volume = float(volume[-1])
+    if not _positive(total_volume):
+        return _empty_result(result.sample_name, "总进汞量≤0，孔结构指标不可计算。")
     curve_pressure, cumulative_percent = _selected_cumulative_percent(
         pressure, volume, pressure_min, pressure_max
     )

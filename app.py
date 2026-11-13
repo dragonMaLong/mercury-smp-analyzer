@@ -61,6 +61,8 @@ def _print_cli_summary(result) -> None:
     print(f"孔隙率: {summary.porosity:.9g} %")
     print(f"最大压力: {result.max_pressure:.9g} psia")
     print(f"数据点数: {result.data_point_count}")
+    for warning in meta.get("warnings", []):
+        print(f"数据提示: {warning}")
 
 
 if __name__ == "__main__":

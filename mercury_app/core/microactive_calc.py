@@ -11,7 +11,7 @@ from scipy.interpolate import Akima1DInterpolator
 from scipy.signal import savgol_filter
 
 from .models import MercuryResult
-from .smp_parser import SMPFile, parse_smp, _washburn
+from .smp_parser import BlankCurve, SMPFile, blank_curve_value, parse_smp, _washburn
 
 
 SMOOTH_LOG_GRID_INTERVALS = 249
@@ -31,21 +31,93 @@ def calculate_microactive(
     adv_contact_angle_deg: float | None = None,
     surface_tension_dynes_cm: float | None = None,
 ) -> MercuryResult:
-    """根据已解析的 SMP 文件计算类 MicroActive 孔结构数据。"""
+    """根据已解析的 SMP 文件计算类 MicroActive 孔结构数据。
+
+    空白校正取 ``smp.blank_selection``："file" 使用文件自身的设置（含内嵌空白
+    曲线时扣除），None 不校正，或由 blank_curve_from_smp 生成的外部空白曲线。
+    """
     theta = smp.adv_contact_angle_deg if adv_contact_angle_deg is None else float(adv_contact_angle_deg)
     gamma = smp.surface_tension_dynes_cm if surface_tension_dynes_cm is None else float(surface_tension_dynes_cm)
-    rows = _build_rows(smp, theta, gamma)
+    blank = _selected_blank(smp)
+    rows = _build_rows(smp, theta, gamma, blank)
     _add_percentages(rows)
     _add_differentials(rows)
+    metadata = _metadata_from_smp(
+        smp,
+        adv_contact_angle_deg=theta,
+        surface_tension_dynes_cm=gamma,
+    )
+    embedded = smp.blank_curve
+    metadata["blank_embedded_label"] = embedded.label if embedded is not None else ""
+    metadata["blank_correction_label"] = blank.label if blank is not None else ""
+    metadata["blank_correction_source"] = (
+        "none" if blank is None else "file" if blank is embedded else "external")
+    if blank is not None:
+        origin = "文件内嵌空白曲线" if blank is embedded else "所选空白文件"
+        metadata["warnings"].append(
+            f"已按{origin}（{blank.label}）扣除空白体积，进/退汞分支分别插值。")
+        if smp.measurement_basis == "capacitance_pF":
+            metadata["warnings"].append(
+                "9600 系列文件的进汞段空白扣除已与 MicroActive 7.00 逐点核对；"
+                "退汞段按对应压力只扣一次空白；原厂软件（9600 2.03、MicroActive 7.00）在该段逐点累加空白，两者不同。")
+        else:
+            zero_lp = sum(
+                1 for p in smp.raw_points[: smp.intrusion_point_count]
+                if p.pressure_psia > 0 and p.intrusion_volume_mL == 0
+            )
+            if zero_lp >= 5:
+                metadata["warnings"].append(
+                    f"进汞段有 {zero_lp} 个点原始体积恰为 0，这些点的累计体积完全来自空白扣除，解释低压孔隙时需谨慎。")
+    elif embedded is not None:
+        metadata["warnings"].append(f"文件设置了空白校正（{embedded.label}），当前选择为不校正。")
+    if max(rows, key=lambda row: row["pressure"])["cum_vol"] <= 0:
+        metadata["warnings"].append("总进汞量≤0，孔隙率、骨架密度及相关孔结构指标不可计算。")
+        if smp.measurement_basis == "intrusion_volume_mL":
+            for row in rows:
+                row["pct_total"] = row["pct_incr"] = float("nan")
     return MercuryResult.from_rows(
-        _metadata_from_smp(
-            smp,
-            adv_contact_angle_deg=theta,
-            surface_tension_dynes_cm=gamma,
-        ),
+        metadata,
         rows,
         raw_smp=smp,
     )
+
+
+def _selected_blank(smp: SMPFile) -> BlankCurve | None:
+    selection = getattr(smp, "blank_selection", "file")
+    if selection is None:
+        return None
+    if isinstance(selection, BlankCurve):
+        return selection
+    if selection == "file":
+        return smp.blank_curve
+    raise ValueError(f"无效的空白校正选择: {selection!r}")
+
+
+def blank_curve_from_smp(filepath: str | Path) -> BlankCurve:
+    """用另一个 SMP 文件作为空白：取其未校正的比体积（mL/g，按该文件自身质量）。
+
+    与 MicroActive 7.00 的 "Select/Replace Blank" 一致（旧版与 9600 文件均已核对进汞段）。
+    """
+    smp = parse_smp(filepath)
+    rows = _build_rows(smp, smp.adv_contact_angle_deg, smp.surface_tension_dynes_cm, None)
+    intrusion_count = sum(1 for row in rows if not row["is_extrusion"])
+    if intrusion_count < 2:
+        raise ValueError("空白文件的进汞点不足，无法用于校正。")
+    return BlankCurve(
+        reference_path=str(filepath),
+        points=[(row["pressure"], row["cum_vol"]) for row in rows],
+        intrusion_count=intrusion_count,
+        per_gram=True,
+    )
+
+
+def _subtract_blank(rows: list[dict[str, float]], blank: BlankCurve | None, mass: float) -> None:
+    if blank is None:
+        return
+    scale = 1.0 if blank.per_gram else 1.0 / mass
+    for index, row in enumerate(rows):
+        row["cum_vol"] -= blank_curve_value(blank, row["pressure"], bool(row["is_extrusion"])) * scale
+        row["incr_vol"] = row["cum_vol"] - rows[index - 1]["cum_vol"] if index else 0.0
 
 
 def export_microactive_csv(result: MercuryResult, output_csv: str | Path) -> None:
@@ -103,7 +175,11 @@ def _metadata_from_smp(
         "modified": smp.modified,
         "version": smp.version,
         "instrument_model": smp.instrument_model,
-        "instrument_name": _instrument_name(smp.instrument_name, smp.instrument_model),
+        "instrument_name": _instrument_name(smp.instrument_name, smp.instrument_model)
+        + (f"（序列号 {smp.instrument_serial}）"
+           if smp.measurement_basis == "intrusion_volume_mL" and smp.instrument_serial else ""),
+        "instrument_serial": smp.instrument_serial,
+        "instrument_ports": smp.instrument_ports,
         "analysis_software": smp.analysis_software,
         "analysis_software_version": smp.analysis_software_version,
         "software_version": smp.software_version,
@@ -132,6 +208,8 @@ def _metadata_from_smp(
         "raw_point_count": len(smp.raw_points),
         "lp_buffer_point_count": len(smp.lp_buffer_points),
         "pressure_program_count": len(smp.pressure_program),
+        "measurement_basis": smp.measurement_basis,
+        "warnings": list(smp.warnings),
     }
 
 
@@ -188,7 +266,16 @@ def _max_pressure_raw_index(points, hp_start, lp_max_pressure, k_uL_per_pF, stem
     return max(valid, key=lambda item: item[1])[0]
 
 
-def _build_rows(smp: SMPFile, theta: float, gamma: float) -> list[dict[str, float]]:
+def _build_rows(
+    smp: SMPFile, theta: float, gamma: float, blank: BlankCurve | None = None,
+) -> list[dict[str, float]]:
+    if smp.measurement_basis == "intrusion_volume_mL":
+        rows = _build_volume_rows(smp, theta, gamma)
+        _subtract_blank(rows, blank, smp.sample_mass_g)
+        return rows
+    if smp.measurement_basis != "capacitance_pF":
+        raise ValueError(f"不支持的测量单位: {smp.measurement_basis}")
+
     k = smp.penetrometer.constant_uL_per_pF
     mass = smp.sample_mass_g
     stem = smp.penetrometer.stem_volume_mL
@@ -242,6 +329,42 @@ def _build_rows(smp: SMPFile, theta: float, gamma: float) -> list[dict[str, floa
     if not rows:
         raise ValueError("未能从 SMP 数据生成计算表。")
 
+    _subtract_blank(rows, blank, mass)
+    return rows
+
+
+def _build_volume_rows(smp: SMPFile, theta: float, gamma: float) -> list[dict[str, float]]:
+    """Legacy IV records already contain head-corrected psia and absolute mL.
+
+    Stored volumes are not blank-corrected; _build_rows subtracts the selected
+    blank afterwards. Do not reapply the V-series capacitance conversion,
+    pressure correction, or extrusion envelope here.
+    """
+    mass = smp.sample_mass_g
+    if not math.isfinite(mass) or mass <= 0:
+        raise ValueError("旧版 SMP 样品质量必须为有限正数。")
+    boundary = smp.intrusion_point_count
+    if boundary is None or not 0 < boundary <= len(smp.raw_points):
+        raise ValueError("旧版 SMP 的进退汞分界无效。")
+
+    rows = []
+    for index, point in enumerate(smp.raw_points):
+        pressure = point.pressure_psia
+        volume = point.intrusion_volume_mL
+        if not math.isfinite(pressure) or volume is None or not math.isfinite(volume):
+            raise ValueError("旧版 SMP 包含无效压力或体积记录。")
+        if pressure <= 0:
+            continue
+        cumulative = volume / mass
+        rows.append({
+            "pressure": pressure,
+            "diameter": _washburn(pressure, theta, gamma),
+            "cum_vol": cumulative,
+            "incr_vol": cumulative - rows[-1]["cum_vol"] if rows else 0.0,
+            "is_extrusion": float(index >= boundary),
+        })
+    if not rows:
+        raise ValueError("旧版 SMP 没有可计算的正压力点。")
     return rows
 
 

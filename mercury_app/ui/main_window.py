@@ -18,6 +18,7 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QT_LIB, QtCore, QtGui, QtWidgets
 
 from mercury_app.core import (
+    blank_curve_from_smp,
     calculate_mayer_stowe,
     calculate_pore_structure,
     calculate_microactive,
@@ -5194,6 +5195,7 @@ class MainWindow(TelemetryUiMixin, QtWidgets.QMainWindow):
             summary_rows = [
                 ("文件", self._display_text(result.metadata.get("file_name"))),
                 ("样品名称", self._display_text(result.metadata.get("sample_name"))),
+                ("空白校正", result.metadata.get("blank_correction_label") or "无"),
                 ("测试人员", self._display_text(result.metadata.get("operator"))),
                 ("提交者", self._display_text(result.metadata.get("submitter"))),
                 ("测试时间（创建）", self._display_text(result.metadata.get("created"))),
@@ -5217,32 +5219,113 @@ class MainWindow(TelemetryUiMixin, QtWidgets.QMainWindow):
                 ),
                 (
                     "中值孔径（体积）",
-                    f"{summary.median_volume_diameter:.6g} nm @ {summary.median_volume_pressure:.6g} psia, "
-                    f"{summary.median_volume:.6g} mL/g",
+                    self._summary_value_text(
+                        "{:.6g} nm @ {:.6g} psia, {:.6g} mL/g",
+                        summary.median_volume_diameter, summary.median_volume_pressure, summary.median_volume,
+                    ),
                 ),
                 (
                     "中值孔径（面积）",
-                    f"{summary.median_area_diameter:.6g} nm @ {summary.median_area_pressure:.6g} psia, "
-                    f"{summary.median_area:.6g} m^2/g",
+                    self._summary_value_text(
+                        "{:.6g} nm @ {:.6g} psia, {:.6g} m^2/g",
+                        summary.median_area_diameter, summary.median_area_pressure, summary.median_area,
+                    ),
                 ),
-                ("平均孔径（4V/A）", f"{summary.average_pore_diameter:.6g} nm"),
+                (
+                    "平均孔径（4V/A）",
+                    self._summary_value_text("{:.6g} nm", summary.average_pore_diameter),
+                ),
                 (
                     "体积密度",
-                    f"{summary.bulk_density:.6g} g/mL @ {summary.bulk_density_pressure:.2f} psia",
+                    self._summary_value_text(
+                        "{:.6g} g/mL @ {:.2f} psia", summary.bulk_density, summary.bulk_density_pressure,
+                    ),
                 ),
                 (
                     "表观骨架密度",
-                    f"{summary.apparent_density:.6g} g/mL @ {summary.apparent_density_pressure:.6g} psia",
+                    self._summary_value_text(
+                        "{:.6g} g/mL @ {:.6g} psia", summary.apparent_density, summary.apparent_density_pressure,
+                    ),
                 ),
-                ("孔隙率", f"{summary.porosity:.6g} %"),
+                ("孔隙率", self._summary_value_text("{:.6g} %", summary.porosity)),
                 ("最大压力", f"{result.max_pressure:.6g} psia"),
                 ("数据点数", str(result.data_point_count)),
             ]
+            for row_index in range(table.rowCount()):
+                table.removeCellWidget(row_index, 1)
             table.setRowCount(len(summary_rows) + len(rows))
 
             for row_index, (name, value) in enumerate(summary_rows + rows):
                 table.setItem(row_index, 0, QtWidgets.QTableWidgetItem(name))
-                table.setItem(row_index, 1, QtWidgets.QTableWidgetItem(value))
+                item = QtWidgets.QTableWidgetItem(value)
+                table.setItem(row_index, 1, item)
+                if name == "空白校正":
+                    table.setCellWidget(row_index, 1, self._make_blank_combo(index, result))
+
+    def _make_blank_combo(self, index: int, result) -> QtWidgets.QComboBox:
+        """空白校正下拉：无 / 文件内嵌空白 / 已选外部空白 / 选择空白文件…"""
+        combo = QtWidgets.QComboBox()
+        combo.setObjectName("blankCorrectionCombo")
+        combo.addItem("无", "none")
+        embedded = result.metadata.get("blank_embedded_label")
+        if embedded:
+            combo.addItem(f"{embedded}（文件内嵌）", "file")
+        source = result.metadata.get("blank_correction_source", "none")
+        if source == "external":
+            combo.addItem(result.metadata.get("blank_correction_label") or "外部空白", "external")
+        combo.addItem("选择空白文件…", "browse")
+        combo.setCurrentIndex(max(combo.findData(source), 0))
+        combo.setToolTip("选择用于扣除的空白（背景）数据；默认采用文件测试时设置的空白。")
+        # activated fires only on user interaction. The handler rebuilds this
+        # table (and this combo), so run it after the signal has returned.
+        combo.activated.connect(
+            lambda position, i=index, c=combo: QtCore.QTimer.singleShot(
+                0, lambda kind=c.itemData(position): self.on_blank_correction_selected(i, kind)))
+        return combo
+
+    def _choose_blank_file(self, start_dir: str) -> str:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "选择空白校正文件", start_dir, "SMP 文件 (*.SMP *.smp)")
+        return path
+
+    def on_blank_correction_selected(self, index: int, kind: str) -> None:
+        if not (0 <= index < len(self.results)):
+            return
+        result = self.results[index]
+        smp = result.raw_smp
+        if smp is None or kind == "external":
+            return
+        previous = smp.blank_selection
+        try:
+            if kind == "browse":
+                path = self._choose_blank_file(os.path.dirname(smp.file_path))
+                if not path:
+                    self._refresh_visibility_dependent_ui()
+                    return
+                smp.blank_selection = blank_curve_from_smp(path)
+            else:
+                smp.blank_selection = None if kind == "none" else "file"
+            updated = self._calculate_sample_with_parameters(
+                index,
+                float(result.metadata.get("adv_contact_angle_deg")),
+                float(result.metadata.get("surface_tension_dynes_cm")),
+            )
+        except Exception as exc:
+            smp.blank_selection = previous
+            self._refresh_visibility_dependent_ui()
+            self.statusBar().showMessage(f"空白校正未更改：{exc}", 8000)
+            return
+        self._replace_sample_result(index, updated)
+        self._restore_parameter_cells(index)
+        self._refresh_visibility_dependent_ui()
+        self.statusBar().showMessage(
+            f"空白校正：{updated.metadata.get('blank_correction_label') or '无'}", 5000)
+
+    @staticmethod
+    def _summary_value_text(template: str, *values: float) -> str:
+        if not all(np.isfinite(value) for value in values):
+            return "—"
+        return template.format(*values)
 
     @staticmethod
     def _display_text(value) -> str:

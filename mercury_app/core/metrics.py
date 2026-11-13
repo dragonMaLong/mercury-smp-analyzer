@@ -38,7 +38,7 @@ def metrics_for_pressure_range(
     positive_increments = np.where(np.isfinite(incremental) & (incremental > 0), incremental, 0.0)
     pore_volume = float(np.sum(positive_increments))
     total_volume = result.total_pore_volume
-    pore_percent = pore_volume / total_volume * 100.0 if total_volume > 0 else 0.0
+    pore_percent = pore_volume / total_volume * 100.0 if total_volume > 0 else float("nan")
 
     finite_peak_mask = np.isfinite(log_diff)
     if np.any(finite_peak_mask):
@@ -67,9 +67,10 @@ def summary_metrics(result: MercuryResult, bulk_density_pressure: float | None =
     total_volume = result.total_pore_volume
     total_pressure = result.max_pressure
     total_area = _total_pore_area(result)
-    median_volume_pressure, median_volume_diameter = _median_by_cumulative_volume(result, total_volume / 2.0)
+    median_volume = total_volume / 2.0 if total_volume > 0 else float("nan")
+    median_volume_pressure, median_volume_diameter = _median_by_cumulative_volume(result, median_volume)
     median_area_pressure, median_area_diameter = _median_by_cumulative_area(result, total_area / 2.0)
-    average_diameter = 4000.0 * total_volume / total_area if total_area > 0 else float("nan")
+    average_diameter = 4000.0 * total_volume / total_area if total_area > 0 and total_volume > 0 else float("nan")
     if bulk_density_pressure is None:
         indexes = _intrusion_indexes(result)
         bulk_density_pressure = float(np.min(result.pressure[indexes])) if indexes.size else 0.5
@@ -89,7 +90,7 @@ def summary_metrics(result: MercuryResult, bulk_density_pressure: float | None =
         total_pore_area=total_area,
         median_volume_pressure=median_volume_pressure,
         median_volume_diameter=median_volume_diameter,
-        median_volume=total_volume / 2.0,
+        median_volume=median_volume,
         median_area_pressure=median_area_pressure,
         median_area_diameter=median_area_diameter,
         median_area=total_area / 2.0,
