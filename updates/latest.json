@@ -1,39 +1,39 @@
 {
-  "version": "v1.1.6",
-  "release_name": "MIP综合分析-DragonScience v1.1.6",
-  "asset_name": "MIP-DragonScience-v1.1.6.exe",
-  "release_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/tag/v1.1.6",
-  "download_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/download/v1.1.6/MIP-DragonScience-v1.1.6.exe",
-  "github_release_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/tag/v1.1.6",
-  "github_download_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/download/v1.1.6/MIP-DragonScience-v1.1.6.exe",
-  "gitee_release_url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/tag/v1.1.6",
+  "version": "v1.1.7",
+  "release_name": "MIP综合分析-DragonScience v1.1.7",
+  "asset_name": "MIP-DragonScience-v1.1.7.exe",
+  "release_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/tag/v1.1.7",
+  "download_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/download/v1.1.7/MIP-DragonScience-v1.1.7.exe",
+  "github_release_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/tag/v1.1.7",
+  "github_download_url": "https://github.com/dragonMaLong/mercury-smp-analyzer/releases/download/v1.1.7/MIP-DragonScience-v1.1.7.exe",
+  "gitee_release_url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/tag/v1.1.7",
   "gitee_download_parts": [
     {
-      "name": "MIP-DragonScience-v1.1.6.exe.part01",
-      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.6/MIP-DragonScience-v1.1.6.exe.part01",
-      "size": 23211311,
-      "sha256": "BB0DAB6E1040906F6A4A82F1E29B54D98784A43E3EEB0B5B96E8135F7FF7B576"
+      "name": "MIP-DragonScience-v1.1.7.exe.part01",
+      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.7/MIP-DragonScience-v1.1.7.exe.part01",
+      "size": 23211624,
+      "sha256": "7A022183082AA26D72D6AC8916555A31F2560E7888C2777DE559DB89316EEB6A"
     },
     {
-      "name": "MIP-DragonScience-v1.1.6.exe.part02",
-      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.6/MIP-DragonScience-v1.1.6.exe.part02",
-      "size": 23211311,
-      "sha256": "D53D0190AF7C44A00F462022A27F6C72B1F79D574A18B9A4C4CCD439393AC86D"
+      "name": "MIP-DragonScience-v1.1.7.exe.part02",
+      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.7/MIP-DragonScience-v1.1.7.exe.part02",
+      "size": 23211624,
+      "sha256": "83E1C60F9269EE15B0DB18DDDE9AB46063AC01714E8D7A2E6952F0DB7AE22F8F"
     },
     {
-      "name": "MIP-DragonScience-v1.1.6.exe.part03",
-      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.6/MIP-DragonScience-v1.1.6.exe.part03",
-      "size": 23211311,
-      "sha256": "07B62DE1034D3AD4BC3B657B9719D73ECE7ADA50B058D3D3202E0E0C5DA5270A"
+      "name": "MIP-DragonScience-v1.1.7.exe.part03",
+      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.7/MIP-DragonScience-v1.1.7.exe.part03",
+      "size": 23211624,
+      "sha256": "F14B47F5C816D4890E01AEADEC9404201E23D2CD145BE480FE619C90BC72A385"
     },
     {
-      "name": "MIP-DragonScience-v1.1.6.exe.part04",
-      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.6/MIP-DragonScience-v1.1.6.exe.part04",
-      "size": 23211311,
-      "sha256": "BE077BE9510B368D2A7731C6C78C1785C1AF5317C22153FCFBFB538C3532C422"
+      "name": "MIP-DragonScience-v1.1.7.exe.part04",
+      "url": "https://gitee.com/dragonMalong/mercury-smp-analyzer/releases/download/v1.1.7/MIP-DragonScience-v1.1.7.exe.part04",
+      "size": 23211624,
+      "sha256": "16EA06AEF865CC0B1CDF38FB571C114884ED18FB87900511B9D492AB7425B140"
     }
   ],
-  "release_notes": "MIP综合分析-DragonScience v1.1.6\n\n- 新增“分析结果”页签，集中展示多个样品的进汞接触角、表面张力、总入汞体积、孔面积、孔径、密度和孔隙率等指标。\n- 分析结果随图中选区同步更新压力/孔径范围、孔容、孔容占比和峰值数据；“样品信息”保留样品元数据与空白校正选择。\n- 分析结果支持样品按行或按列排列，与孔结构表共享显示方向；支持参数排序、首列冻结、带样品名和列名复制，以及样品悬停联动。\n- 界面与 PDF 报告统一使用“测试时间”标签。\n- 修复表格纵向滚动时冻结列与数值行错位的问题。\n\n旧版升级：v1.0.0、v1.1.0、v1.1.1 的内置更新器存在已知启动缺陷。请关闭旧程序，将完整新版 EXE 放到原程序路径并保留原文件名，再从原入口打开确认版本；v0.1.x 也需手动替换。\n",
-  "published_at": "2026-11-13",
-  "sha256": "0BFACCBFDF70AB2B58F67B83178637382114C639E81B8DCDE1868A2F81F2A9CD"
+  "release_notes": "解决了若干bug",
+  "published_at": "2026-11-19",
+  "sha256": "D9A331FA2B3B3AE22451C48E097081255BDF7E6BA06D03D3D1503AA5989C4BB5"
 }
