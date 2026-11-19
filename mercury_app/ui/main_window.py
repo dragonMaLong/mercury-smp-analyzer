@@ -32,6 +32,7 @@ from mercury_app.update_checker import DEFAULT_UPDATE_REPOSITORY, UpdateInfo, ch
 from mercury_app.updater import UpdateDownloadError, download_update, launch_update_and_exit
 from mercury_app.ui.plots import (
     DEFAULT_COLORS,
+    additional_sample_colors,
     clip_log_curve_to_range,
     link_sample_curve_hover_plots,
     make_plot,
@@ -2337,6 +2338,7 @@ class MainWindow(TelemetryUiMixin, QtWidgets.QMainWindow):
     def load_files(self, file_paths) -> None:
         self._remove_region()
         self.results = [self._load_file_with_telemetry(file_path, load_smp) for file_path in file_paths]
+        self.sample_colors = list(DEFAULT_COLORS)
         self.visible_results = [True] * len(self.results)
         self.active_index = 0
         self.result = self.results[0] if self.results else None
@@ -2357,6 +2359,7 @@ class MainWindow(TelemetryUiMixin, QtWidgets.QMainWindow):
 
         raw_region = self._current_pressure_region()
         mayer_region = self._current_mayer_pressure_region()
+        self._expand_sample_colors()
         self._remove_region()
         self.results.extend(new_results)
         self.visible_results.extend([True] * len(new_results))
@@ -2418,8 +2421,16 @@ class MainWindow(TelemetryUiMixin, QtWidgets.QMainWindow):
         mayer_region = self._current_mayer_pressure_region()
         self._remove_region()
         kept_visibility = {id(result): visible for result, visible in zip(self.results, self.visible_results)}
+        self._expand_sample_colors()
+        kept_ids = {id(result) for result in new_results}
+        kept_colors = {id(result): color for result, color in zip(self.results, self.sample_colors)
+                       if id(result) in kept_ids}
+        added_colors = iter(additional_sample_colors(
+            list(kept_colors.values()), len(new_results) - len(kept_colors)))
         active_result = self.results[self.active_index] if 0 <= self.active_index < len(self.results) else None
         self.results = new_results
+        self.sample_colors = [kept_colors[id(result)] if id(result) in kept_colors else next(added_colors)
+                              for result in new_results]
         self.visible_results = [kept_visibility.get(id(result), True) for result in new_results]
         if active_result in new_results:
             self.active_index = new_results.index(active_result)
@@ -2439,6 +2450,7 @@ class MainWindow(TelemetryUiMixin, QtWidgets.QMainWindow):
         active_index: int | None = None,
     ) -> None:
         self.setWindowTitle(APP_TITLE)
+        self._expand_sample_colors()
         self._build_metric_tabs(active_index=active_index)
         self._redraw_plots()
         self._add_distribution_selection_items()
@@ -3377,12 +3389,11 @@ class MainWindow(TelemetryUiMixin, QtWidgets.QMainWindow):
         self._refresh_visibility_dependent_ui()
 
     def _expand_sample_colors(self) -> None:
-        """Materialize the plot palette before reordering/removing sample rows."""
-        palette = self.sample_colors or list(DEFAULT_COLORS)
-        if len(palette) < len(self.results):
-            self.sample_colors = [palette[index % len(palette)] for index in range(len(self.results))]
-        elif not self.sample_colors:
+        """Keep existing assignments and give every added sample an unused color."""
+        if not self.sample_colors:
             self.sample_colors = list(DEFAULT_COLORS)
+        self.sample_colors.extend(additional_sample_colors(
+            self.sample_colors, len(self.results) - len(self.sample_colors)))
 
     @staticmethod
     def _test_time_sort_key(result) -> str:

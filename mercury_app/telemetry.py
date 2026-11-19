@@ -93,6 +93,20 @@ def configured_endpoint() -> str:
         return ""
 
 
+def storage_directory(default_root: object) -> Path | None:
+    """Return the state directory, honouring an absolute ``MERCURY_TELEMETRY_DIR``.
+
+    The override lets acceptance runs keep their state away from the real
+    per-user preference. An empty or relative override is ignored.
+    """
+    override = os.environ.get("MERCURY_TELEMETRY_DIR", "").strip()
+    if override and Path(override).is_absolute():
+        return Path(override)
+    if not default_root:
+        return None
+    return Path(str(default_root)) / "DragonScience" / "MercurySMP" / "telemetry"
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request, response, code, message, headers, new_url):
         return None
@@ -162,6 +176,7 @@ class TelemetryClient:
         self._storage_busy = False
         self._consent: bool | None = None
         self._new_installation = False
+        self._retain_saved = False
         self._install_id: str | None = None
         self._session_id: str | None = None
         self._queue: list[dict] = []
@@ -373,6 +388,14 @@ class TelemetryClient:
                 return
             if type(state["queue"]) is not list or len(state["queue"]) > MAX_QUEUE_EVENTS:
                 return
+            if state["endpoint"] != self._endpoint and not self._endpoint:
+                # Delivery is only disabled for this process (an empty
+                # override or a package missing its configuration). That is
+                # not a new recipient: leave the saved preference, ID and
+                # queue of the configured service untouched on disk.
+                self._consent = consent
+                self._retain_saved = True
+                return
             if state["endpoint"] != self._endpoint:
                 # Consent identifies a recipient, not just a global on switch.
                 # Preserve an opt-out across address changes. A preference
@@ -423,6 +446,12 @@ class TelemetryClient:
 
     def _save_locked(self) -> bool:
         temporary = None
+        if self._retain_saved:
+            # Only an explicit opt-out may replace a configured service's state
+            # while this process has no service.
+            if self._consent is not False:
+                return True
+            self._retain_saved = False
         try:
             state = {"state_version": _STATE_VERSION, "consent": self._consent,
                      "install_id": self._install_id, "endpoint": self._endpoint, "queue": self._queue}

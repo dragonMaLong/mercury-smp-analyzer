@@ -8,7 +8,7 @@ from pathlib import Path
 from pyqtgraph.Qt import QtCore, QtWidgets
 
 from mercury_app.core import load_smp
-from mercury_app.telemetry import TelemetryClient, configured_endpoint
+from mercury_app.telemetry import TelemetryClient, configured_endpoint, storage_directory
 from mercury_app.ui.telemetry_settings import TelemetrySettingsDialog, startup_environment
 from mercury_app.ui.usage_timer import UsageTimer
 from mercury_app.version import __version__
@@ -56,10 +56,10 @@ class TelemetryUiMixin:
         self._telemetry_initialized = True
         try:
             storage = QtCore.QStandardPaths.writableLocation(QtCore.QStandardPaths.GenericDataLocation)
-            if not storage:
-                return
             # Explicit application directory keeps IDs/preferences separate from BET.
-            directory = Path(storage) / "DragonScience" / "MercurySMP" / "telemetry"
+            directory = storage_directory(storage)
+            if directory is None:
+                return
             self._telemetry = TelemetryClient(directory, __version__, configured_endpoint())
             self._record_telemetry_startup()
         except Exception:

@@ -37,6 +37,33 @@ DEFAULT_COLORS = (
     "#334155",
 )
 
+
+def additional_sample_colors(existing: list[str], count: int) -> list[str]:
+    """Allocate unused colors without recycling a shortened sample list."""
+    used = {QtGui.QColor(color).name() for color in existing}
+    added = []
+    # A finite bank also keeps extreme overlays from exhausting 8-bit colors
+    # and searching forever for another unique RGB value.
+    for index in range(len(DEFAULT_COLORS) + 4096):
+        if len(added) >= count:
+            return added
+        if index < len(DEFAULT_COLORS):
+            color = DEFAULT_COLORS[index]
+        else:
+            # Golden-angle spacing extends the fixed palette for larger sets.
+            offset = index - len(DEFAULT_COLORS)
+            hue = (offset * 0.618033988749895) % 1.0
+            saturation = 0.65 + 0.1 * ((offset // 360) % 3)
+            value = 0.62 + 0.1 * ((offset // 1080) % 3)
+            color = QtGui.QColor.fromHsvF(hue, saturation, value).name()
+        if color not in used:
+            used.add(color)
+            added.append(color)
+    added.extend(DEFAULT_COLORS[index % len(DEFAULT_COLORS)]
+                 for index in range(max(0, count - len(added))))
+    return added
+
+
 DISTRIBUTION_CURVE_POINT_COUNT = 360
 
 

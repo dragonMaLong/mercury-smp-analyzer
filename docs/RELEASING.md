@@ -72,7 +72,7 @@ C:\build\venv-mip\Scripts\python.exe -m PyInstaller --noconfirm --distpath dist/
 
 ## 发布前必须执行的更新验证
 
-在隔离目录操作 EXE 副本，不替换用户正在运行的文件。不能仅修改 `sys.frozen` 后用普通 Python 进程模拟单文件程序：PyInstaller 的父子进程、文件占用和重启环境需要真实冻结程序验证。
+在隔离目录操作 EXE 副本，不替换用户正在运行的文件。**每个验收进程都要同时设置 `MERCURY_TELEMETRY_URL` 为空和 `MERCURY_TELEMETRY_DIR` 为临时目录的绝对路径**（见 `docs/TELEMETRY.md`“验收与测试时的隔离”）；只设前者曾两次清空开发机上已保存的统计开关（v1.1.5、v1.1.6 验收）。1.1.6 及更早的 EXE 不认 `MERCURY_TELEMETRY_DIR`，需要启动它们时（如升级链路的旧版一端）不要设空地址，改在独立的 Windows 账户或虚拟机中进行。不能仅修改 `sys.frozen` 后用普通 Python 进程模拟单文件程序：PyInstaller 的父子进程、文件占用和重启环境需要真实冻结程序验证。
 
 1. **版本与正常启动。** 直接启动最终候选 EXE，确认 GUI 显示目标版本、主要界面可打开，并核对冻结包内版本。记录 EXE 大小和 SHA-256。
 2. **实际更新链路。** 使用真实冻结程序启动更新，验证助手已执行并确认 ready 后旧窗口才关闭；助手退出码 0 本身不算成功。检查旧 Python 子进程和单文件父进程退出、原路径文件被替换、新版自动出现且没有成功弹窗阻塞。

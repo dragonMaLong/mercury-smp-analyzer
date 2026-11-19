@@ -205,6 +205,49 @@ class TelemetryClientTests(unittest.TestCase):
         self.assertEqual(self.read_state()["queue"], [])
         self.assertIsNone(self.read_state()["install_id"])
 
+    def test_unconfigured_launch_keeps_saved_state_of_configured_service(self):
+        old = self.queue(2)
+        old.close()
+        before = (self.root / t._STATE_FILENAME).read_bytes()
+        with patch.object(t, "_send_batch") as send:
+            disabled = self.client(endpoint="")
+            self.assertTrue(disabled.preference_enabled)
+            self.assertFalse(disabled.enabled)
+            self.assertFalse(disabled.record("feature_view", **FEATURE))
+            self.assertTrue(disabled.set_enabled(True))
+            self.assertIsNone(disabled._worker)
+            send.assert_not_called()
+            disabled.close()
+        self.assertEqual((self.root / t._STATE_FILENAME).read_bytes(), before)
+        with patch.object(t.TelemetryClient, "_start_worker_locked"):
+            restored = self.client()
+        self.assertTrue(restored.enabled)
+        self.assertEqual(restored._install_id, old._install_id)
+        self.assertEqual(restored.pending_count, 2)
+
+    def test_opt_out_during_unconfigured_launch_is_saved(self):
+        old = self.queue(1)
+        old.close()
+        disabled = self.client(endpoint="")
+        self.assertTrue(disabled.set_enabled(False))
+        disabled.close()
+        self.assertIs(self.read_state()["consent"], False)
+        self.assertIsNone(self.read_state()["install_id"])
+        with patch.object(t, "_send_batch") as send:
+            configured = self.client()
+            self.assertFalse(configured.enabled)
+            send.assert_not_called()
+
+    def test_storage_directory_override_must_be_absolute(self):
+        default = self.root / "DragonScience" / "MercurySMP" / "telemetry"
+        with patch.dict(os.environ, {"MERCURY_TELEMETRY_DIR": str(self.root / "qa")}):
+            self.assertEqual(t.storage_directory(self.root), self.root / "qa")
+        with patch.dict(os.environ, {"MERCURY_TELEMETRY_DIR": "relative"}):
+            self.assertEqual(t.storage_directory(self.root), default)
+        with patch.dict(os.environ, {"MERCURY_TELEMETRY_DIR": ""}):
+            self.assertEqual(t.storage_directory(self.root), default)
+            self.assertIsNone(t.storage_directory(""))
+
     def test_retries_keep_event_ids_and_batches_at_most_thirty(self):
         client = self.queue(35)
         deliveries = []
